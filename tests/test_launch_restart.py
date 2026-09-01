@@ -50,6 +50,15 @@ class LaunchRestartTests(unittest.TestCase):
 
         self.assertEqual(env['INDEX_URL'], 'https://example.invalid/simple')
 
+
+    def test_huggingface_transfer_is_disabled_when_optional_package_is_missing(self):
+        with mock.patch.object(launch.importlib.util, 'find_spec', return_value=None):
+            with mock.patch.dict(os.environ, {'HF_HUB_ENABLE_HF_TRANSFER': '1'}):
+                value = launch.configure_huggingface_transfer()
+
+                self.assertEqual(value, '0')
+                self.assertEqual(os.environ['HF_HUB_ENABLE_HF_TRANSFER'], '0')
+
     def test_config_alias_sets_config_path_argument(self):
         config_path = os.path.join('profiles', 'custom.json')
 

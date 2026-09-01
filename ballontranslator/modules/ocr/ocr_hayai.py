@@ -24,7 +24,7 @@ class HayaiOCRV2(OCRBase):
     256
     """
 
-    dependencies = ["torch", "transformers==4.57.6"]
+    dependencies = ["torch", "transformers==4.57.6", "hf_transfer"]
     params = {
         "max_num_patches": {
             "type": "selector",

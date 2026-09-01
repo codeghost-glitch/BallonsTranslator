@@ -1,4 +1,5 @@
 from pathlib import Path
+import importlib.util
 import sys
 import argparse
 import os.path as osp
@@ -208,14 +209,34 @@ def core_requirements_env(config_path: str) -> dict:
 
     return installer_env_with_pypi_mirror(os.environ.copy(), read_saved_pypi_mirror(config_path))
 
+def configure_huggingface_transfer() -> str:
+    """Enable Hugging Face fast downloads only when the optional package exists.
+
+    >>> from unittest import mock
+    >>> with mock.patch.object(importlib.util, 'find_spec', return_value=None):
+    ...     configure_huggingface_transfer()
+    '0'
+    """
+
+    try:
+        available = importlib.util.find_spec('hf_transfer') is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        available = False
+    value = '1' if available else '0'
+    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = value
+    return value
+
+
 
 def main():
 
     if args.debug:
         os.environ['BALLOONTRANS_DEBUG'] = '1'
-
     os.environ['QT_API'] = args.qt_api
-    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
+    # Hugging Face raises instead of falling back when transfer acceleration is
+    # enabled without its optional package.
+    configure_huggingface_transfer()
+
 
     APP_DIR = shared.PROGRAM_PATH
     os.chdir(APP_DIR)
