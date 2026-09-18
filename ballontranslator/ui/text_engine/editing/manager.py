@@ -1129,7 +1129,17 @@ class SceneTextManager(QObject):
 
         adaptive_fntsize = False
         resize_ratio = 1
-        if self.auto_textlayout_flag and pcfg.let_fntsize_flag == 0 and pcfg.let_autolayout_flag:
+        # Free text (no bubble outline, no saved mask) has no real container:
+        # the enlarged bbox used as its region is synthetic, so word-fitting
+        # against it shrinks arbitrarily (similar runs got 0.57x vs 0.88x).
+        # Detected sizes are the source-truth estimate; only blocks without a
+        # detection (global-size manual text) still take the region fit.
+        trust_detected = (
+            mask is None
+            and blkitem.blk.bubble_polygon is None
+            and float(getattr(blkitem.blk, '_detected_font_size', -1) or -1) > 0
+        )
+        if self.auto_textlayout_flag and pcfg.let_fntsize_flag == 0 and pcfg.let_autolayout_flag and not trust_detected:
             if blkitem.blk.src_is_vertical and blkitem.blk.vertical != blkitem.blk.src_is_vertical:
                 adaptive_fntsize = True
                 area_ratio = ballon_area / text_area

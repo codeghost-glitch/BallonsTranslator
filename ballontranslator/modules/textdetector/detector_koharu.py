@@ -211,6 +211,13 @@ def _estimate_font_size(text_mask: np.ndarray, vertical: bool, fallback: int) ->
     furigana and punctuation. ``fallback`` (the bbox minimum dimension)
     keeps the old ceiling for empty or blob-like masks.
 
+    Masks over busy art also bleed sideways, making every column band
+    fatter than its glyphs. Each band is therefore refined with the ink
+    runs along the reading-flow axis inside it: glyph bodies form runs
+    clearly shorter than the band, so their 75th percentile replaces a
+    band width that exceeds it by >20%. Tight columns (glyph run as tall
+    as the band) keep the band width, which stays the glyph advance.
+
     >>> mask = np.zeros((40, 100), dtype=bool)
     >>> mask[10:30, 5:25] = True
     >>> mask[10:30, 55:75] = True
@@ -220,18 +227,44 @@ def _estimate_font_size(text_mask: np.ndarray, vertical: bool, fallback: int) ->
     ink = text_mask > 0
     if ink.any():
         profile = ink.sum(axis=0 if vertical else 1)
-        bands: List[int] = []
-        run = 0
-        for value in profile:
-            if value > 0:
-                run += 1
-            elif run:
-                bands.append(run)
-                run = 0
-        if run:
-            bands.append(run)
-        if bands:
-            estimate = int(round(float(np.median(bands))))
+        bands: List[Tuple[int, int]] = []
+        start: Optional[int] = None
+        for index, value in enumerate(profile):
+            if value > 0 and start is None:
+                start = index
+            elif value == 0 and start is not None:
+                bands.append((start, index))
+                start = None
+        if start is not None:
+            bands.append((start, len(profile)))
+        refined: List[float] = []
+        for band_start, band_end in bands:
+            band_width = band_end - band_start
+            if band_width < 3:
+                continue
+            window = ink[:, band_start:band_end] if vertical else ink[band_start:band_end, :]
+            inner = window.sum(axis=1 if vertical else 0) > 0
+            runs: List[int] = []
+            run = 0
+            for value in inner:
+                if value:
+                    run += 1
+                elif run:
+                    runs.append(run)
+                    run = 0
+            if run:
+                runs.append(run)
+            kept = [length for length in runs if length >= 4]
+            # p75 keeps full glyphs and drops sliver fragments; the 0.8 rule
+            # only trusts it over the band when the band is clearly fat.
+            inner_size = (
+                float(np.percentile(kept, 75)) if kept else float(band_width)
+            )
+            refined.append(
+                inner_size if inner_size < 0.8 * band_width else float(band_width)
+            )
+        if refined:
+            estimate = int(round(float(np.median(refined))))
             if estimate >= 3:
                 return min(estimate, fallback)
     return fallback
