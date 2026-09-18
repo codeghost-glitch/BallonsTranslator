@@ -10,6 +10,7 @@ from transformers import (
 )
 
 from .base import DEVICE_SELECTOR, OCRBase, register_OCR
+from ballontranslator.utils.logger import suppress_model_warnings
 
 
 MODEL_PATH = "data/models/hayai-ocr-v2"
@@ -24,7 +25,7 @@ class HayaiOCRV2(OCRBase):
     256
     """
 
-    dependencies = ["torch", "transformers==4.57.6"]
+    dependencies = ["torch", "transformers>=4.57.6,<6.0.0"]
     params = {
         "max_num_patches": {
             "type": "selector",
@@ -83,18 +84,24 @@ class HayaiOCRV2(OCRBase):
         return value
 
     def _load_model(self) -> None:
-        processor = Siglip2ImageProcessor.from_pretrained(VISION_MODEL_ID)
+        try:
+            processor = Siglip2ImageProcessor.from_pretrained(VISION_MODEL_ID, local_files_only=True)
+        except OSError:
+            processor = Siglip2ImageProcessor.from_pretrained(VISION_MODEL_ID)
         tokenizer = PreTrainedTokenizerFast.from_pretrained(
             MODEL_PATH,
             local_files_only=True,
         )
         # Hayai defines custom block-causal attention and 2D mRoPE classes.
-        model = AutoModel.from_pretrained(
-            MODEL_PATH,
-            trust_remote_code=True,
-            use_safetensors=True,
-            local_files_only=True,
-        ).to(self.device).eval()
+        with suppress_model_warnings(
+            'transformers.distributed.tensor_parallel', ('The following layers were not sharded:',),
+        ):
+            model = AutoModel.from_pretrained(
+                MODEL_PATH,
+                trust_remote_code=True,
+                use_safetensors=True,
+                local_files_only=True,
+            ).to(self.device).eval()
 
         self.processor = processor
         self.tokenizer = tokenizer
@@ -110,13 +117,13 @@ class HayaiOCRV2(OCRBase):
         inputs = {key: value.to(self.device) for key, value in inputs.items()}
 
         with torch.inference_mode():
+            # Keep the model token budget and decode defaults: block crops are often
+            # multi-line, and a lower cap silently truncates their text mid-sentence.
             texts = self.model.generate(
                 pixel_values=inputs["pixel_values"],
                 pixel_attention_mask=inputs["pixel_attention_mask"],
                 spatial_shapes=inputs["spatial_shapes"],
                 tokenizer=self.tokenizer,
-                max_new_tokens=128,
-                repetition_penalty=1.0,
             )
         return texts[0]
 

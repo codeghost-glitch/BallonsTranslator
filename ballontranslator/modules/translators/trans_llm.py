@@ -358,6 +358,11 @@ class LLMTranslator(LLMChatRequester, BaseTranslator):
         if not self.all_model_loaded():
             self.load_model()
         profile = self.profile
+        vision_supported = bool(profile.support_vision)
+        if empty_page_summary and not vision_supported:
+            # Without an image the empty-page request carries no source
+            # signal; text blocks still translate normally below.
+            return []
         target_language_name = self._translated_lang(target_language)
         prompt_spec = TranslationPromptSpec(
             source_language=self._translated_lang(source_language),
@@ -374,6 +379,7 @@ class LLMTranslator(LLMChatRequester, BaseTranslator):
         vision_request = None
         if (
             vision_enabled
+            and vision_supported
             and project is not None
             and page_key is not None
         ):
@@ -381,6 +387,13 @@ class LLMTranslator(LLMChatRequester, BaseTranslator):
                 project,
                 str(page_key),
                 profile,
+            )
+        if vision_enabled and not vision_supported:
+            safe_name = str(profile.name).replace('\r', ' ').replace('\n', ' ')
+            self.logger.warning(
+                'LLM profile "%s" does not support vision; '
+                'continuing without page image.',
+                safe_name,
             )
         model = self._text_model(profile)
         request_context = self._snapshot_request_context(

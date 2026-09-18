@@ -4,13 +4,10 @@ import argparse
 import os.path as osp
 import os
 import shutil
-import subprocess
 from platform import platform
 
 
-git = os.environ.get('GIT', "git")
 QT_APIS = ['pyqt6', 'pyside6', 'pyqt5', 'pyside2']
-stored_commit_hash = None
 
 FONT_EXTS = {'.ttf','.otf','.ttc','.pfb'}
 
@@ -88,6 +85,7 @@ parser.add_argument("--exec_dirs", default='', help='translation queue (project 
 parser.add_argument("--ldpi", default=None, type=float, help='logical dots perinch')
 parser.add_argument("--export-translation-txt", action='store_true', help='save translation to txt file once RUN completed')
 parser.add_argument("--export-source-txt", action='store_true', help='save source to txt file once RUN completed')
+parser.add_argument("--export-cbz", action='store_true', help='export rendered pages to a CBZ archive once RUN completed')
 parser.add_argument(
     "--show-release-info",
     "--show_release_info",
@@ -215,7 +213,6 @@ def main():
         os.environ['BALLOONTRANS_DEBUG'] = '1'
 
     os.environ['QT_API'] = args.qt_api
-    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
 
     APP_DIR = shared.PROGRAM_PATH
     os.chdir(APP_DIR)

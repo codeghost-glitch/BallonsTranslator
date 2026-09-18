@@ -23,7 +23,7 @@ Project JSON
 
 | Concern | Owner | Main files |
 | --- | --- | --- |
-| Block content, logical rectangle, angle, metadata, alpha mask | `TextBlock` | [`utils/textblock.py`](../../ballontranslator/utils/textblock.py), [`utils/text_alpha_mask.py`](../../ballontranslator/utils/text_alpha_mask.py) |
+| Block content, logical rectangle, angle, bubble outline, metadata, alpha mask | `TextBlock` | [`utils/textblock.py`](../../ballontranslator/utils/textblock.py), [`utils/bubble.py`](../../ballontranslator/utils/bubble.py), [`utils/text_alpha_mask.py`](../../ballontranslator/utils/text_alpha_mask.py) |
 | Persistent typography, transforms, and immutable effect stack | `FontFormat` | [`utils/fontformat.py`](../../ballontranslator/utils/fontformat.py), [`utils/text_effects.py`](../../ballontranslator/utils/text_effects.py) |
 | Live Qt integration | `TextBlkItem` and `QTextDocument` | [`ui/text_engine/item.py`](../../ballontranslator/ui/text_engine/item.py) |
 | Rich-text import/export and annotations | `annotations.py` | [`ui/text_engine/annotations.py`](../../ballontranslator/ui/text_engine/annotations.py) |

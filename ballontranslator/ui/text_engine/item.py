@@ -1370,12 +1370,67 @@ class TextBlkItem(QGraphicsTextItem):
         self._update_nonlinear_editing_ui()
         
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        super().mouseMoveEvent(event)  
+        super().mouseMoveEvent(event)
         if self.textInteractionFlags() == Qt.TextInteractionFlag.TextEditorInteraction:
             self._emit_inline_format_changed()
             self._update_nonlinear_editing_ui()
         else:
+            self._maybe_snap_to_bubble_center(event)
             self.moving.emit(self)
+
+    def _maybe_snap_to_bubble_center(
+        self, event: QGraphicsSceneMouseEvent
+    ) -> bool:
+        """Magnet the dragged logical center onto the bubble center.
+
+        Snapping is drag-only, single-selection, and per-axis so one axis
+        can lock while the other still follows the mouse. Alt disables it
+        for fine placement. Position-only: alignment is left untouched and
+        the move-finished undo snapshot keeps the snapped position.
+        """
+        try:
+            if event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                return False
+            blk = self.blk
+            polygon = getattr(blk, 'bubble_polygon', None)
+            if not polygon or self.rotation() != 0:
+                return False
+            if not self._text_transform_is_neutral():
+                return False
+            scene = self.scene()
+            if scene is not None:
+                selected = [
+                    item for item in scene.selectedItems() if isinstance(item, TextBlkItem)
+                ]
+                if len(selected) != 1 or selected[0] is not self:
+                    return False
+            from ballontranslator.utils.bubble import (
+                BUBBLE_CENTER_SNAP_RADIUS,
+                bubble_inner_center,
+                snap_point_to_bubble_center,
+            )
+            guide = bubble_inner_center(polygon)
+            if guide is None:
+                return False
+            bubble_x, bubble_y, _rect = guide
+            top_left = self.logical_position()
+            size = self.geometry_controller.logical_rect().size()
+            item_x = top_left.x() + size.width() / 2.0
+            item_y = top_left.y() + size.height() / 2.0
+            snapped_x, snapped_y, snapped = snap_point_to_bubble_center(
+                item_x, item_y, bubble_x, bubble_y, BUBBLE_CENTER_SNAP_RADIUS,
+            )
+            if not snapped:
+                return False
+            self.set_logical_position(
+                QPointF(
+                    top_left.x() + (snapped_x - item_x),
+                    top_left.y() + (snapped_y - item_y),
+                )
+            )
+            return True
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return False
 
     def _copy_selected_text(self) -> None:
         cursor = self.textCursor()

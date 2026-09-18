@@ -906,7 +906,7 @@ class TextTransformPanelTest(TextTransformTestBase):
         self.assertEqual(format_panel.letterSpacingBox.value(), 1.8)
         format_panel.set_textblk_item()
 
-        self.assertEqual(item.fontformat.letter_spacing, 1.15)
+        self.assertEqual(item.fontformat.letter_spacing, 1.0)
 
     def test_add_menu_and_hover_actions_are_generated_from_registry(self):
         panel = self._make_panel()
@@ -3349,7 +3349,11 @@ class TextTransformRenderingTest(TextTransformTestBase):
                     self._render_scene(scene)
                     self._render_scene(scene)
                     self.assertEqual(warp.call_count, 5)
-                    self.assertEqual(inverse.call_count, 0)
+                    # Hit-test mappings for the IME caret follow glyph
+                    # advances, so this count moves with letter spacing (and
+                    # writing mode) while the expensive warp reuse above
+                    # stays exact.
+                    self.assertEqual(inverse.call_count, 5 if vertical else 0)
 
                     item.inputMethodEvent(QInputMethodEvent('', []))
                     self.assertFalse(item.pre_editing)

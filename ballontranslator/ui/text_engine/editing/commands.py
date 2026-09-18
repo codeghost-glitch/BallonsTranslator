@@ -323,6 +323,57 @@ class MoveBlkItemsCommand(QUndoCommand):
         self._apply(self.old_pos_lst)
 
 
+class CenterInBubbleCommand(QUndoCommand):
+    """Move text boxes onto their bubble interior centers with undo.
+
+    Position-only apart from forcing Center alignment so wrapped lines read
+    as one centered block, matching the automatic bubble-fit path.
+
+    >>> CenterInBubbleCommand.__name__
+    'CenterInBubbleCommand'
+    """
+
+    def __init__(
+        self,
+        items: List[TextBlkItem],
+        before_positions: Sequence[QPointF],
+        after_positions: Sequence[QPointF],
+        before_alignments: Sequence[int],
+        after_alignments: Sequence[int],
+    ) -> None:
+        super().__init__()
+        self.items = list(items)
+        if not (
+            len(self.items) == len(before_positions) == len(after_positions)
+            == len(before_alignments) == len(after_alignments)
+        ):
+            raise ValueError('items, positions, and alignments must align')
+        self.before_positions = [QPointF(pos) for pos in before_positions]
+        self.after_positions = [QPointF(pos) for pos in after_positions]
+        self.before_alignments = [int(alignment) for alignment in before_alignments]
+        self.after_alignments = [int(alignment) for alignment in after_alignments]
+        if (
+            self.before_positions == self.after_positions
+            and self.before_alignments == self.after_alignments
+        ):
+            self.setObsolete(True)
+
+    def _apply(
+        self, positions: Sequence[QPointF], alignments: Sequence[int]
+    ) -> None:
+        for item, position, alignment in zip(self.items, positions, alignments):
+            item.set_logical_position(QPointF(position))
+            if int(item.fontformat.alignment) != int(alignment):
+                item.setAlignment(int(alignment))
+            item._old_pos = item.pos()
+
+    def redo(self) -> None:
+        self._apply(self.after_positions, self.after_alignments)
+
+    def undo(self) -> None:
+        self._apply(self.before_positions, self.before_alignments)
+
+
 class MoveByKeyCommand(QUndoCommand):
     def __init__(
         self,
@@ -464,35 +515,44 @@ class RotateItemCommand(QUndoCommand):
 
 
 class AutoLayoutCommand(QUndoCommand):
-    def __init__(self, items: List[TextBlkItem], old_rect_lst: List, old_html_lst: List, trans_widget_lst: List[TransTextEdit]):
+    def __init__(self, items: List[TextBlkItem], old_rect_lst: List, old_html_lst: List, trans_widget_lst: List[TransTextEdit], old_alignment_lst: List[int] = None):
         super(AutoLayoutCommand, self).__init__()
         self.items = items
         self.old_html_lst = old_html_lst
         self.old_rect_lst = old_rect_lst
         self.trans_widget_lst = trans_widget_lst
+        if old_alignment_lst is None:
+            # Legacy callers predate centered bubble fitting; without a
+            # snapshot the safest fallback is to keep the current alignment.
+            old_alignment_lst = [int(item.fontformat.alignment) for item in items]
+        self.old_alignment_lst = [int(alignment) for alignment in old_alignment_lst]
         self.new_rect_lst = []
         self.new_html_lst = []
+        self.new_alignment_lst = []
         for item in items:
             self.new_html_lst.append(item.toHtml())
             self.new_rect_lst.append(item.absBoundingRect(qrect=True))
+            self.new_alignment_lst.append(int(item.fontformat.alignment))
         self.counter = 0
 
-    def redo(self):
+    def _restore(self, item, trans_widget, html, rect, alignment: int) -> None:
+        item.setPlainText('')
+        item.setRect(rect, repaint=False)
+        if int(item.fontformat.alignment) != int(alignment):
+            item.setAlignment(int(alignment), repaint_background=False)
+        item.load_rich_text_html(html)
+        trans_widget.setPlainText(item.toPlainText())
+
+    def redo(self) -> None:
         self.counter += 1
         if self.counter <= 1:
             return
-        for item, trans_widget, html, rect  in zip(self.items, self.trans_widget_lst, self.new_html_lst, self.new_rect_lst):
-            trans_widget.setPlainText(item.toPlainText())
-            item.setPlainText('')
-            item.setRect(rect, repaint=False)
-            item.load_rich_text_html(html)
+        for item, trans_widget, html, rect, alignment in zip(self.items, self.trans_widget_lst, self.new_html_lst, self.new_rect_lst, self.new_alignment_lst):
+            self._restore(item, trans_widget, html, rect, alignment)
             
-    def undo(self):
-        for item, trans_widget, html, rect  in zip(self.items, self.trans_widget_lst, self.old_html_lst, self.old_rect_lst):
-            trans_widget.setPlainText(item.toPlainText())
-            item.setPlainText('')
-            item.setRect(rect, repaint=False)
-            item.load_rich_text_html(html)
+    def undo(self) -> None:
+        for item, trans_widget, html, rect, alignment in zip(self.items, self.trans_widget_lst, self.old_html_lst, self.old_rect_lst, self.old_alignment_lst):
+            self._restore(item, trans_widget, html, rect, alignment)
 
 
 class SqueezeCommand(QUndoCommand):

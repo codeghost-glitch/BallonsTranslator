@@ -137,6 +137,38 @@ class LLMTranslationIntegrationTest(
             request.call_args_list[1].args[1],
         )
 
+    def test_vision_unsupported_profile_falls_back_to_text(self):
+        self.profile.support_vision = False
+        project = self._project(1)
+        project.pages['001.png'][0].translation = ''
+        project.read_img = mock.Mock(
+            return_value=np.zeros((32, 24, 3), dtype=np.uint8)
+        )
+        pcfg.module.llm_translate_vision = True
+
+        with mock.patch.object(
+            type(self.translator),
+            'profile',
+            new_callable=mock.PropertyMock,
+            return_value=self.profile,
+        ), mock.patch.object(
+            self.translator,
+            'all_model_loaded',
+            return_value=True,
+        ), mock.patch.object(
+            self.translator,
+            '_request_translation',
+            return_value='{"1":"translated"}',
+        ):
+            result = self.translator.translate(
+                ['source-1'],
+                project=project,
+                page_key='001.png',
+            )
+
+        self.assertEqual(result, ['translated'])
+        project.read_img.assert_not_called()
+
     def test_build_copy_prompt_includes_glossary_but_not_project_history(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, 'terms.txt')

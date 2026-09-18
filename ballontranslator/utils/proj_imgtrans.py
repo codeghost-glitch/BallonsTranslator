@@ -4,6 +4,7 @@ import io
 import os, json, shutil, re, docx, docx2txt, piexif, cv2
 import tempfile
 import warnings
+import zipfile
 from docx.shared import Inches
 from docx import Document
 import piexif.helper
@@ -1162,6 +1163,54 @@ class ProjImgTrans:
 
     def doc_exist(self) -> bool:
         return osp.exists(self.doc_path())
+
+    def cbz_path(self) -> str:
+        """Default CBZ destination named after the project folder.
+
+        >>> project = ProjImgTrans()
+        >>> project.directory = 'somewhere'
+        >>> project.cbz_path().replace(chr(92), '/')
+        'somewhere/somewhere.cbz'
+        """
+        folder = osp.basename(osp.normpath(self.directory))
+        return os.path.join(self.directory, folder + ".cbz")
+
+    @staticmethod
+    def cbz_encode_params(pagename: str) -> Tuple[str, int]:
+        """Image encoding matching the original page file.
+
+        Pages keep their exact filenames in the archive, so bytes must match
+        the extension. Quality only applies to JPEG.
+
+        >>> ProjImgTrans.cbz_encode_params('01.jpg')
+        ('JPEG', 95)
+        >>> ProjImgTrans.cbz_encode_params('02.PNG')
+        ('PNG', -1)
+        """
+        if osp.splitext(pagename)[1].lower() in ('.jpg', '.jpeg'):
+            return ('JPEG', 95)
+        return ('PNG', -1)
+
+    def dump_cbz(
+        self, rendered: List[Tuple[str, bytes]], cbz_path: str = None,
+    ) -> str:
+        """Pack rendered per-page PNGs into a CBZ archive in list order.
+
+        >>> import tempfile, zipfile
+        >>> project = ProjImgTrans()
+        >>> project.directory = tempfile.mkdtemp()
+        >>> path = project.dump_cbz([('0000_a.png', b'\\x89PNGfake')])
+        >>> zipfile.ZipFile(path).namelist()
+        ['0000_a.png']
+        """
+        if not rendered:
+            raise ValueError('no rendered pages to export')
+        if cbz_path is None:
+            cbz_path = self.cbz_path()
+        with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for arcname, png_bytes in rendered:
+                archive.writestr(arcname, png_bytes)
+        return cbz_path
 
     def dump_doc(self, delete_tmp_folder=True, fin_page_signal=None):
         

@@ -1,5 +1,5 @@
 import os.path as osp
-import os, re, traceback, sys
+import os, traceback, sys
 from typing import List, Optional, Tuple, Union
 from pathlib import Path
 import subprocess
@@ -8,7 +8,7 @@ import time
 
 from tqdm import tqdm
 from qtpy.QtWidgets import QAction, QFileDialog, QMenu, QHBoxLayout, QVBoxLayout, QApplication, QStackedWidget, QSplitter, QListWidget, QShortcut, QListWidgetItem, QMessageBox, QTextEdit, QPlainTextEdit, QDialog, QWidget, QColorDialog
-from qtpy.QtCore import Qt, QPoint, QSize, QEvent, Signal, QTimer
+from qtpy.QtCore import Qt, QPoint, QSize, QEvent, Signal, QTimer, QBuffer, QIODevice
 from qtpy.QtGui import QContextMenuEvent, QTextCursor, QGuiApplication, QIcon, QCloseEvent, QKeySequence, QPainter, QClipboard, QColor
 
 from ballontranslator.utils.logger import logger as LOGGER
@@ -263,6 +263,9 @@ class MainWindow(mainwindow_cls):
         self.leftBar.open_json_proj.connect(self.openJsonProj)
         self.leftBar.save_proj.connect(self.manual_save)
         self.leftBar.export_doc.connect(self.on_export_doc)
+        # Lambda swallows QAction.triggered's checked bool; a direct connect
+        # would pass it as save_path.
+        self.leftBar.export_cbz.connect(lambda: self.on_export_cbz())
         self.leftBar.import_doc.connect(self.on_import_doc)
         self.leftBar.export_src_txt.connect(lambda : self.on_export_txt(dump_target='source'))
         self.leftBar.export_trans_txt.connect(lambda : self.on_export_txt(dump_target='translation'))
@@ -1904,6 +1907,8 @@ class MainWindow(mainwindow_cls):
             self.on_export_txt('translation')
         if shared.args.export_source_txt:
             self.on_export_txt('source')
+        if shared.args.export_cbz:
+            self.on_export_cbz()
         if shared.HEADLESS:
             self.run_next_dir()
 
@@ -2325,6 +2330,86 @@ class MainWindow(mainwindow_cls):
         if self.canvas.text_change_unsaved():
             self.st_manager.updateTextBlkList()
         self.export_doc_thread.exportAsDoc(self.imgtrans_proj)
+
+    def on_export_cbz(self, save_path: str = None) -> None:
+        if self.canvas.text_change_unsaved():
+            self.st_manager.updateTextBlkList()
+        num_pages = self.imgtrans_proj.num_pages
+        if num_pages == 0:
+            if not shared.HEADLESS:
+                create_error_dialog(
+                    ValueError('empty project'),
+                    self.tr('Failed to export as CBZ file'),
+                )
+            return
+        if save_path is None:
+            if shared.HEADLESS:
+                save_path = self.imgtrans_proj.cbz_path()
+            else:
+                dialog = QFileDialog()
+                save_path = dialog.getSaveFileName(
+                    self, self.tr('Export as CBZ'),
+                    self.imgtrans_proj.cbz_path(),
+                    filter='Comic Book Archive (*.cbz)',
+                )[0]
+                if not save_path:
+                    return
+                if not save_path.lower().endswith('.cbz'):
+                    save_path += '.cbz'
+                if osp.exists(save_path):
+                    confirm = QMessageBox()
+                    confirm.setText(self.tr('Overwrite ') + save_path + '?')
+                    confirm.setStandardButtons(
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if confirm.exec_() == QMessageBox.StandardButton.No:
+                        return
+        try:
+            rendered = self.render_pages_for_cbz(num_pages)
+            self.imgtrans_proj.dump_cbz(rendered, save_path)
+        except Exception as e:
+            if not shared.HEADLESS:
+                create_error_dialog(e, self.tr('Failed to export as CBZ file'))
+            return
+        if not shared.HEADLESS:
+            create_info_dialog(self.tr('CBZ file exported to ') + save_path)
+
+    def render_pages_for_cbz(self, num_pages: int) -> List[Tuple[str, bytes]]:
+        """Render every project page to PNG bytes in page order.
+
+        The visible page is restored afterwards. Rendering stays on the GUI
+        thread because the scene (not the project data) owns the paint path.
+        """
+        current_row = self.pageList.currentRow()
+        rendered: List[Tuple[str, bytes]] = []
+        progress = ProgressMessageBox(self.tr('Export as CBZ...'), False, self)
+        try:
+            progress.updateTaskProgress(0)
+            progress.show()
+            for index, pagename in enumerate(self.imgtrans_proj.pages):
+                self.pageList.setCurrentRow(
+                    self.imgtrans_proj.pagename2idx(pagename)
+                )
+                QApplication.processEvents()
+                image = self.canvas.render_result_img()
+                image_format, quality = self.imgtrans_proj.cbz_encode_params(pagename)
+                buffer = QBuffer()
+                buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                try:
+                    if not image.save(buffer, image_format, quality):
+                        raise ValueError(f'failed to encode {pagename}')
+                    rendered.append((
+                        osp.basename(pagename),
+                        bytes(buffer.data()),
+                    ))
+                finally:
+                    buffer.close()
+                progress.updateTaskProgress(int((index + 1) / num_pages * 100))
+        finally:
+            progress.hide()
+            self.pageList.setCurrentRow(current_row)
+            QApplication.processEvents()
+        return rendered
 
     def on_import_doc(self):
         self.import_doc_thread.importDoc(self.imgtrans_proj)

@@ -2,7 +2,7 @@ import numpy as np
 from typing import Callable, List, Optional, Union
 import os
 
-from qtpy.QtWidgets import QApplication, QSlider, QMenu, QGraphicsScene, QGraphicsSceneDragDropEvent , QGraphicsView, QGraphicsSceneDragDropEvent, QGraphicsRectItem, QGraphicsItem, QScrollBar, QGraphicsPixmapItem, QGraphicsSceneMouseEvent, QGraphicsSceneContextMenuEvent, QRubberBand
+from qtpy.QtWidgets import QApplication, QSlider, QMenu, QGraphicsScene, QGraphicsSceneDragDropEvent, QGraphicsView, QGraphicsRectItem, QGraphicsItem, QScrollBar, QGraphicsPixmapItem, QGraphicsSceneMouseEvent, QGraphicsSceneContextMenuEvent, QRubberBand
 from qtpy.QtCore import Qt, QDateTime, QRectF, QPointF, QPoint, Signal, QSize, QSizeF, QEvent, QTimer
 from qtpy.QtGui import QKeySequence, QPixmap, QImage, QHideEvent, QKeyEvent, QMouseEvent, QWheelEvent, QResizeEvent, QPainter, QPen, QPainterPath, QCursor, QNativeGestureEvent
 from qtpy.QtWidgets import QGraphicsPathItem
@@ -93,6 +93,133 @@ class CustomGV(QGraphicsView):
 
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.bubble_paths = {}
+        self.bubble_item_keys = {}
+        self.bubble_guides = {}
+
+    def add_bubble_region(self, item: TextBlkItem) -> None:
+        polygon = item.blk.bubble_polygon
+        if not polygon:
+            self.remove_bubble_region(item)
+            return
+        key = tuple(tuple(point) for point in polygon)
+        if self.bubble_item_keys.get(id(item)) == key:
+            return
+        self.remove_bubble_region(item)
+        if key not in self.bubble_paths:
+            path = QPainterPath(QPointF(*polygon[0]))
+            for point in polygon[1:]:
+                path.lineTo(QPointF(*point))
+            path.closeSubpath()
+            self.bubble_paths[key] = [path, 0]
+        self.bubble_paths[key][1] += 1
+        self.bubble_item_keys[id(item)] = key
+        self.viewport().update()
+
+    def remove_bubble_region(self, item: TextBlkItem) -> None:
+        key = self.bubble_item_keys.pop(id(item), None)
+        # A stale id (an item removed without removeItem) can point at a
+        # key whose path is already gone; treat a missing path as refcount 0.
+        path_entry = self.bubble_paths.get(key) if key is not None else None
+        if path_entry is not None:
+            path_entry[1] -= 1
+            if path_entry[1] <= 0:
+                del self.bubble_paths[key]
+                self.bubble_guides.pop(key, None)
+            self.viewport().update()
+
+    def _bubble_guide(self, key: tuple) -> Optional[tuple]:
+        """Return the cached interior center for one bubble outline.
+
+        >>> isinstance(CustomGV._bubble_guide, object)
+        True
+        """
+        if key not in self.bubble_guides:
+            try:
+                from ballontranslator.utils.bubble import bubble_inner_center
+                guide = bubble_inner_center([list(point) for point in key])
+            except (TypeError, ValueError):
+                guide = None
+            self.bubble_guides[key] = guide
+        return self.bubble_guides[key]
+
+    def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
+        super().drawForeground(painter, rect)
+        if self.canvas is None:
+            return
+        painter.save()
+        painter.setTransform(self.canvas.baseLayer.sceneTransform(), True)
+        if pcfg.show_detected_bubbles:
+            pen = QPen(QColor(30, 147, 229))
+            pen.setWidthF(3.0)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(QColor(30, 147, 229, 35))
+            for path, _count in self.bubble_paths.values():
+                painter.drawPath(path)
+        self._draw_bubble_center_guides(painter)
+        painter.restore()
+
+    def _draw_bubble_center_guides(self, painter: QPainter) -> None:
+        """Draw a + grid at the bubble center of each selected bubble."""
+        canvas = self.canvas
+        if canvas is None:
+            return
+        try:
+            selected = canvas.selected_text_items(sort=False)
+        except (AttributeError, RuntimeError):
+            return
+        if not selected:
+            return
+        from ballontranslator.utils.bubble import BUBBLE_CENTER_SNAP_RADIUS
+        base_pen = QPen(QColor(30, 147, 229, 200))
+        base_pen.setWidthF(1.5)
+        base_pen.setCosmetic(True)
+        snap_pen = QPen(QColor(248, 64, 147, 220))
+        snap_pen.setWidthF(2.0)
+        snap_pen.setCosmetic(True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for item in selected:
+            blk = getattr(item, 'blk', None)
+            polygon = getattr(blk, 'bubble_polygon', None)
+            if not polygon:
+                continue
+            try:
+                key = tuple(tuple(point) for point in polygon)
+            except TypeError:
+                continue
+            guide = self._bubble_guide(key)
+            if guide is None:
+                continue
+            center_x, center_y, rect = guide
+            try:
+                left, top, width, height = (float(value) for value in rect)
+            except (TypeError, ValueError):
+                continue
+            if width < 1 or height < 1:
+                continue
+            # Highlight when the text box already sits on the interior
+            # center so the drag snap has visible feedback.
+            pen = base_pen
+            try:
+                logical_top_left = item.logical_position()
+                logical_size = item.geometry_controller.logical_rect().size()
+                item_cx = logical_top_left.x() + logical_size.width() / 2.0
+                item_cy = logical_top_left.y() + logical_size.height() / 2.0
+                if (
+                    abs(item_cx - center_x) <= BUBBLE_CENTER_SNAP_RADIUS
+                    and abs(item_cy - center_y) <= BUBBLE_CENTER_SNAP_RADIUS
+                ):
+                    pen = snap_pen
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+            painter.setPen(pen)
+            painter.drawRect(QRectF(left, top, width, height))
+            pad = max(6.0, min(width, height) * 0.08)
+            painter.drawLine(QPointF(left - pad, center_y), QPointF(left + width + pad, center_y))
+            painter.drawLine(QPointF(center_x, top - pad), QPointF(center_x, top + height + pad))
+            painter.drawEllipse(QPointF(center_x, center_y), 4.0, 4.0)
 
     def viewportEvent(self, event: QEvent) -> bool:
         canvas = self.canvas
@@ -202,6 +329,8 @@ class Canvas(QGraphicsScene):
 
     format_textblks = Signal()
     layout_textblks = Signal()
+    center_in_bubble = Signal()
+    hyphenate_textblks = Signal()
     reset_angle = Signal()
     squeeze_blk = Signal()
 
@@ -716,6 +845,12 @@ class Canvas(QGraphicsScene):
         self.scaleFactorLabel.startFadeAnimation()
 
     def on_selection_changed(self) -> None:
+        # Bubble-center guides live in the view foreground, so repaint it
+        # when the selection (and thus the guide set) changes.
+        try:
+            self.gv.viewport().update()
+        except (AttributeError, RuntimeError):
+            pass
         self.alpha_mask_edit_session.handle_selection_changed()
         if self.txtblkShapeControl.isVisible():
             blk_item = self.txtblkShapeControl.blk_item
@@ -895,6 +1030,7 @@ class Canvas(QGraphicsScene):
         item.effect_renderer.project_assets_changed()
         item.set_order_badge_layer(self.orderBadgeLayer)
         item.set_order_badge_visible(self.order_badges_visible)
+        self.gv.add_bubble_region(item)
 
     def start_path_reorder(self) -> bool:
         """Start one path gesture that defines a new page reading order."""
@@ -1494,6 +1630,11 @@ class Canvas(QGraphicsScene):
 
             format_act = menu.addAction(self.tr("Apply font formatting"))
             layout_act = menu.addAction(self.tr("Auto layout"))
+            center_act = menu.addAction(self.tr("Center in bubble"))
+            hyphenate_act = menu.addAction(self.tr('Hyphenate text'))
+            bubbles_act = menu.addAction(self.tr('Highlight detected bubbles'))
+            bubbles_act.setCheckable(True)
+            bubbles_act.setChecked(pcfg.show_detected_bubbles)
             angle_act = menu.addAction(self.tr("Reset Angle"))
             squeeze_act = menu.addAction(self.tr("Squeeze"))
             menu.addSeparator()
@@ -1521,6 +1662,13 @@ class Canvas(QGraphicsScene):
                 self.format_textblks.emit()
             elif rst == layout_act:
                 self.layout_textblks.emit()
+            elif rst == center_act:
+                self.center_in_bubble.emit()
+            elif rst == hyphenate_act:
+                self.hyphenate_textblks.emit()
+            elif rst == bubbles_act:
+                pcfg.show_detected_bubbles = bubbles_act.isChecked()
+                self.gv.viewport().update()
             elif rst == angle_act:
                 self.reset_angle.emit()
             elif rst == squeeze_act:
@@ -1598,6 +1746,7 @@ class Canvas(QGraphicsScene):
     def removeItem(self, item: QGraphicsItem) -> None:
         self.block_selection_signal = True
         if isinstance(item, TextBlkItem):
+            self.gv.remove_bubble_region(item)
             if item is self.alpha_mask_edit_session.target:
                 self.alpha_mask_edit_session.deactivate()
             # Rejoin the badge to its owner before both leave the scene.

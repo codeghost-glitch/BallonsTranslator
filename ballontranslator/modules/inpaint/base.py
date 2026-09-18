@@ -165,12 +165,15 @@ class InpainterBase(BaseModule):
             
             # Preserve original mask for transparency analysis
             original_mask = mask.copy()
+            remaining_mask = mask.copy()
             
             for blk in textblock_list:
                 xyxy = blk.xyxy
                 xyxy_e = enlarge_window(xyxy, im_w, im_h, ratio=1.7)
                 im = inpainted[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]]
-                msk = mask[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]]
+                msk = remaining_mask[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]].copy()
+                if not np.any(msk):
+                    continue
                 need_inpaint = True
                 if pcfg.module.check_need_inpaint or check_need_inpaint:
                     ballon_msk, non_text_msk = extract_ballon_mask(im, msk)
@@ -192,7 +195,18 @@ class InpainterBase(BaseModule):
                 if need_inpaint:
                     inpainted[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]] = self.memory_safe_inpaint(im, msk)
 
-                mask[xyxy[1]:xyxy[3], xyxy[0]:xyxy[2]] = 0
+                remaining_mask[xyxy_e[1]:xyxy_e[3], xyxy_e[0]:xyxy_e[2]] = 0
+
+            remaining_points = cv2.findNonZero(remaining_mask)
+            if remaining_points is not None:
+                left, top, width, height = cv2.boundingRect(remaining_points)
+                left, top, right, bottom = enlarge_window(
+                    [left, top, left + width, top + height], im_w, im_h, ratio=1.7,
+                )
+                inpainted[top:bottom, left:right] = self.memory_safe_inpaint(
+                    inpainted[top:bottom, left:right],
+                    remaining_mask[top:bottom, left:right].copy(),
+                )
             
             # Recombine with alpha if original was RGBA
             if original_alpha is not None:

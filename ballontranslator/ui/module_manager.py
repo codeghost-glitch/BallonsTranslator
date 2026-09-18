@@ -1,4 +1,5 @@
 import threading
+from time import perf_counter
 from typing import Callable, List, Optional, Union
 import os.path as osp
 
@@ -1080,7 +1081,10 @@ class ImgtransThread(QThread):
                 # are never compatible even if detection later fails.
                 self.imgtrans_proj.begin_detection(imgname)
                 try:
+                    stage_started = perf_counter()
+                    LOGGER.info('Detection started: %s (%s x %s)', imgname, img.shape[1], img.shape[0])
                     mask, blk_list = self.textdetector.detect(img, self.imgtrans_proj)
+                    LOGGER.info('Detection finished: %s, %s blocks, %.2fs', imgname, len(blk_list), perf_counter() - stage_started)
                     need_save_mask = True
                 except ModuleRunError as e:
                     self._stop_on_stage_failure(
@@ -1110,6 +1114,8 @@ class ImgtransThread(QThread):
                 blk_list = self.imgtrans_proj.pages[imgname] if imgname in self.imgtrans_proj.pages else []
 
             if cfg_module.enable_ocr:
+                stage_started = perf_counter()
+                LOGGER.info('OCR started: %s, %s blocks', imgname, len(blk_list))
                 if hasattr(self.ocr, 'set_stop_event'):
                     self.ocr.set_stop_event(self.stop_event)
                 try:
@@ -1185,6 +1191,7 @@ class ImgtransThread(QThread):
                     )
                     break
                 self.imgtrans_proj.update_page_progress(imgname, RunStatus.FIN_OCR)
+                LOGGER.info('OCR finished: %s, %.2fs', imgname, perf_counter() - stage_started)
                 self.update_ocr_progress.emit(self.ocr_counter)
 
             if need_save_mask and mask is not None:
@@ -1216,8 +1223,11 @@ class ImgtransThread(QThread):
                     
                 if mask is not None or cfg_module.inpainter == LLM_INPAINT_KEY:
                     try:
+                        stage_started = perf_counter()
+                        LOGGER.info('Inpainting started: %s, %s blocks', imgname, len(blk_list))
                         inpainted = self.inpainter.inpaint(img, mask, blk_list)
                         self.imgtrans_proj.save_inpainted(imgname, inpainted)
+                        LOGGER.info('Inpainting finished: %s, %.2fs', imgname, perf_counter() - stage_started)
                     except LLMUserActionRequiredError as e:
                         _show_llm_user_action_required_dialog(
                             e,

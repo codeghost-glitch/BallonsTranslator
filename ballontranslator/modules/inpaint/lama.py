@@ -428,3 +428,18 @@ def load_lama_mpe(model_path, device, use_mpe=True, large_arch: bool = False) ->
         model.mpe.load_state_dict(sd['str_state_dict'])
     model.eval().to(device)
     return model
+
+def load_lama_manga(model_path, device) -> LamaFourier:
+    """Load mayocream/lama-manga Big-LaMa weights without masked-position encoding.
+
+    The safetensors file stores the bare generator state dict (``model.*``
+    keys), matching ``LamaFourier(large_arch=True)`` exactly.
+
+    >>> callable(load_lama_manga)
+    True
+    """
+    from safetensors.torch import load_file
+    model = LamaFourier(build_discriminator=False, use_mpe=False, large_arch=True)
+    model.generator.load_state_dict(load_file(model_path, device='cpu'))
+    model.eval().to(device)
+    return model

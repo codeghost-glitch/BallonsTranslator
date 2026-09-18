@@ -1623,9 +1623,6 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
     def on_fntstroke_flag_changed(self):
         pcfg.let_fntstroke_flag = self.let_fntstroke_combox.currentIndex()
 
-    def on_autolayout_changed(self):
-        pcfg.let_autolayout_flag = self.let_autolayout_checker.isChecked()
-
     def on_quick_insert_characters_changed(self, text: str) -> None:
         pcfg.quick_insert_characters = text
 
@@ -1663,6 +1660,9 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         text: str,
     ) -> None:
         pcfg.auto_tate_chu_yoko.additional_chars = text
+
+    def on_autolayout_changed(self):
+        pcfg.let_autolayout_flag = self.let_autolayout_checker.isChecked()
 
     def on_textstyle_indep_changed(self):
         pcfg.let_textstyle_indep_flag = self.let_textstyle_indep_checker.isChecked()

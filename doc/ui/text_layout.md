@@ -124,6 +124,83 @@ changes require full layout. The geometry controller preserves the matching
 scene-space anchor, so layout and scene movement must not both compensate for
 the same resize.
 
+## Detected bubbles and hyphenation
+
+`TextBlock.bubble_polygon` stores an optional page-space bubble outline.
+`utils/bubble.py` owns validation and interior geometry: old projects default
+to no outline, malformed optional data is discarded with a warning, and
+invalid live data fails at serialization. Outlines stay anchored to the source
+page when text moves; pasted blocks discard the source bubble association.
+[Koharu detection](../modules/koharu_detector.md) supplies these outlines.
+
+Auto layout and the pipeline always fit text through
+`text_engine/bubble_layout.py`. It finds the maximal inset rectangle inside the
+detected shape with a dynamic inset (scales with the bubble, capped in absolute
+pixels, taller top/bottom like the guide), avoiding tails and concavities.
+Short dialogue retries against two content-shaped interiors — a rectangle
+shaped like the fitted lines and one shaped like the outline itself (both
+with a small uniform margin) — keeping whichever fits at the larger size, so
+readable size is not pinned by the interior that favors tall rectangles;
+vertical text and shared-outline siblings keep their existing rectangles.
+The fitted box is then anchored to the outline centroid (the same center the
+guide and drag snap use) whenever the shifted box still stays inside the
+physical outline, so automatic layout and "center in bubble" agree.
+`utils/autolayout.py` (balanced lines, linguistic penalties that avoid
+stranding articles, one shared visual axis) over the full interior width,
+baked into the document like the mask fallback path (which shares the
+same engine over the balloon mask or outline contour with tapered profiles
+to hug the balloon, and keeps authored
+paragraph breaks as mandatory breaks); Qt measurement
+stays the ground truth for the font-size search, which probes largest-first
+(balloon fits are non-monotonic) and refines. Fitted text uses Center
+alignment, keeps the interior width for stable wrapping, and centers
+vertically so top/bottom and left/right margins match. This is rectangular
+interior fitting, not per-line contour
+wrapping. The font grows or shrinks to the largest fitting size rather
+than being capped by the detector's source-text estimate. The search reserves
+effect padding for stroked ink. Hyphenation during fitting is a last resort:
+the clean search runs first and soft hyphens are only considered when it
+pins to (or misses) the readable floor, so mid-word
+splits never trade readability for size. Dash compounds split after interior
+dashes (`EHH—`/`BUT`) with no dictionary and render literally, and lines
+never start with a dash (`Hayate-`/`kun`, never `Hayate`/`-kun`). Growth caps
+a little above the detected source size instead of filling bubbles, while
+shrinking is unaffected. Breaks avoid stranding closing
+punctuation on its own line when joining it still fits. The mask fallback
+path centers like the bubble path. Missing
+geometry, rotated text, and transformed text retain the previous
+layout path; vertical text breaks into columns with the same DP transposed.
+Blocks sharing one connected outline first try a neck split so each
+uses its own lobe interior (a `HEY!! YU!!` header stays in the top lobe instead
+of the body's box); without a clean neck the shared outline is partitioned by
+perpendicular bisectors between the sibling centers, clipped to the physical
+contour (koharu-style Voronoi fallback), with coincident siblings subdivided
+into strips, so siblings stay inside the shared outline without overlapping
+each other; shared outlines are still indexed once per layout batch. When even minimum size overflows, the text
+stays centered at minimum size inside the bubble instead of falling back to a
+mask layout outside of it. Manual fitting and hyphenation use canvas undo,
+including alignment, and keep the paired editor in sync on undo/redo.
+
+The canvas **Hyphenate text** action inserts U+00AD discretionary breaks
+using the target-language Pyphen
+dictionary. Pyphen is optional; a missing package or unsupported language logs
+a warning and leaves text unchanged. Dictionary use is local and never
+downloads or installs packages. Qt shows a hyphen only at a line break;
+document content retains soft hyphens through editing and serialization.
+Insertion preserves inline formats and UTF-16 positions, avoids annotated
+ruby/combined runs and nonstandard spelling-changing breaks, and is idempotent.
+Hyphenation uses canvas undo and keeps the paired editor in sync on undo/redo.
+
+The canvas context menu's **Highlight detected bubbles** toggle shows dashed outlines
+associated with live text blocks. `CustomGV` caches shared paths by outline,
+updates them on item attachment/removal, and paints them in the view foreground.
+They are page-space guides and never enter scene image exports or inpainting
+masks. Bubbles without an associated text block are not retained as guides.
+
+Focused verification: `tests/test_bubble_typesetting.py` covers geometry,
+project recovery, fitting, hyphenation, undo, and overlay export/lifetime;
+`tests/test_koharu_detector.py` covers detection association and mask exclusion.
+
 ## Painting and interaction
 
 `vertical_line_placement()` is the shared boundary for rotated glyphs,

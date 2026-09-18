@@ -1157,7 +1157,7 @@ class RichTextAnnotationTest(unittest.TestCase):
 
         self.assertEqual(
             letter_spacing_value(_format_at(item.document(), 0)),
-            1.15,
+            1.0,
         )
         self.assertEqual(
             letter_spacing_value(_format_at(item.document(), 1)),
@@ -1165,9 +1165,9 @@ class RichTextAnnotationTest(unittest.TestCase):
         )
         self.assertEqual(
             letter_spacing_value(_format_at(item.document(), 2)),
-            1.15,
+            1.0,
         )
-        self.assertEqual(item.fontformat.letter_spacing, 1.15)
+        self.assertEqual(item.fontformat.letter_spacing, 1.0)
 
         cursor = item.textCursor()
         cursor.clearSelection()
@@ -1183,7 +1183,7 @@ class RichTextAnnotationTest(unittest.TestCase):
             letter_spacing_value(_format_at(item.document(), 3)),
             0.8,
         )
-        self.assertEqual(item.fontformat.letter_spacing, 1.15)
+        self.assertEqual(item.fontformat.letter_spacing, 1.0)
 
     def test_nonediting_letter_spacing_updates_the_item_default(self):
         item = self._make_item(False, text='ABC')
@@ -3173,7 +3173,7 @@ class RichTextAnnotationTest(unittest.TestCase):
         item.document().undo()
         self.assertEqual(
             letter_spacing_value(_format_at(item.document(), 1)),
-            1.15,
+            1.0,
         )
         item.document().redo()
         self.assertEqual(

@@ -121,6 +121,7 @@ class TextBlock:
     rich_text: str = ""
     _bounding_rect: List = None
     src_is_vertical: bool = None
+    bubble_polygon: Optional[List[List[float]]] = None
     _detected_font_size: float = -1
     det_model: str = None
     label: str = None # ysg yolo label
@@ -285,6 +286,8 @@ class TextBlock:
         self.text_alpha_mask = load_text_alpha_mask(self.text_alpha_mask)
         if self.xyxy is not None:
             self.xyxy = [int(num) for num in self.xyxy]
+        from .bubble import normalize_bubble_polygon
+        self.bubble_polygon = normalize_bubble_polygon(self.bubble_polygon)
         if self.distance is not None:
             self.distance = np.array(self.distance, np.float32)
         if self.vec is not None:
@@ -552,7 +555,10 @@ class TextBlock:
     def __getitem__(self, idx):
         return self.lines[idx]
 
-    def to_dict(self, deep_copy=False):
+    def to_dict(self, deep_copy: bool = False) -> dict:
+        if self.bubble_polygon is not None:
+            from .bubble import normalize_bubble_polygon
+            normalize_bubble_polygon(self.bubble_polygon, strict=True)
         blk_dict = vars(self)
         if deep_copy:
             blk_dict = copy.deepcopy(blk_dict)

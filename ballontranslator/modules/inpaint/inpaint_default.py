@@ -1,4 +1,5 @@
 import sys
+import os.path as osp
 from typing import List, Tuple
 
 import cv2
@@ -369,6 +370,69 @@ class LamaLarge(LamaInpainterMPE):
 
         self.model = load_lama_mpe(r'data/models/lama_large_512px.ckpt', device='cpu', use_mpe=False, large_arch=True)
         self.moveToDevice(device, precision=precision)
+
+
+@register_inpainter('lama_manga')
+class LamaManga(LamaInpainterMPE):
+    """Big-LaLa manga weights from mayocream's lama-manga checkpoint.
+
+    >>> LamaManga().name
+    'lama_manga'
+    """
+
+    dependencies = TORCH_DEPENDENCIES + ['safetensors']
+
+    params = {
+        'inpaint_size': {
+            'type': 'selector',
+            'options': [
+                512,
+                768,
+                1024,
+                1536,
+                2048
+            ],
+            'value': 1536,
+            'display_name': 'Inpaint Size'
+        },
+        'device': DEVICE_SELECTOR(not_supported=['privateuseone']),
+        'precision': {
+            'type': 'selector',
+            'options': [
+                'fp32',
+                'bf16'
+            ],
+            'value': 'bf16' if BF16_SUPPORTED == 'cuda' else 'fp32'
+        },
+        'description': 'Big-LaLa manga inpainting (mayocream/lama-manga). '
+                       'Pairs with any detector; masks from the Koharu detector work directly.',
+    }
+
+    download_file_list = [{
+            'url': 'https://huggingface.co/mayocream/lama-manga/resolve/main/lama-manga.safetensors',
+            'files': 'data/models/lama_manga.safetensors',
+    }]
+    _load_model_keys = {'model'}
+
+    def __init__(self, **params) -> None:
+        super().__init__(**params)
+        self.precision = self.params['precision']['value']
+
+    def _load_model(self):
+        from .lama import load_lama_manga
+        weights = r'data/models/lama_manga.safetensors'
+        if not osp.isfile(weights):
+            raise FileNotFoundError(
+                f'LaMa manga weights are missing: {weights}. Run the selected module setup '
+                'or download lama-manga.safetensors from '
+                'mayocream/lama-manga to this path.'
+            )
+        device = self.params['device']['value']
+        precision = self.params['precision']['value']
+
+        self.model = load_lama_manga(weights, device='cpu')
+        self.moveToDevice(device, precision=precision)
+        self.logger.info(f'Loaded {self.name} weights from {weights} on {self.device}.')
 
 
 FLUX_MODEL_MAPPER = {

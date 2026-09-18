@@ -129,6 +129,8 @@ class LeftBar(Widget):
 
         actionExportAsDoc = QAction(self.tr("Export as Doc"), self)
         self.export_doc = actionExportAsDoc.triggered
+        actionExportAsCbz = QAction(self.tr("Export as CBZ"), self)
+        self.export_cbz = actionExportAsCbz.triggered
         actionImportFromDoc = QAction(self.tr("Import from Doc"), self)
         self.import_doc = actionImportFromDoc.triggered
 
@@ -157,6 +159,7 @@ class LeftBar(Widget):
         openMenu.addActions([
             actionSaveProj,
             actionExportAsDoc,
+            actionExportAsCbz,
             actionImportFromDoc,
             actionExportSrcTxt,
             actionExportTranslationTxt,

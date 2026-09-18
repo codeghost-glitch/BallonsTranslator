@@ -1,8 +1,35 @@
 import datetime
 import logging
+from contextlib import contextmanager
+from threading import get_ident
+from typing import Iterator
 import os
 import os.path as osp
 from glob import glob
+
+
+@contextmanager
+def suppress_model_warnings(logger_name: str, prefixes: tuple[str, ...]) -> Iterator[None]:
+    """Limit known upstream warning noise to the current model operation/thread.
+
+    >>> with suppress_model_warnings('example.model', ('Expected warning',)):
+    ...     pass
+    """
+    owner_thread = get_ident()
+    target = logging.getLogger(logger_name)
+
+    def keep_record(record: logging.LogRecord) -> bool:
+        return not (
+            record.thread == owner_thread
+            and record.levelno == logging.WARNING
+            and record.getMessage().startswith(prefixes)
+        )
+
+    target.addFilter(keep_record)
+    try:
+        yield
+    finally:
+        target.removeFilter(keep_record)
 
 
 COLORS = {

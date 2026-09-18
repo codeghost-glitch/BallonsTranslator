@@ -716,7 +716,12 @@ class FontFormat(Config):
     # every live instance to FontWeight.
     font_weight: FontWeight = None
     line_spacing: float = 1.2
-    letter_spacing: float = 1.15
+    # Neutral tracking: 1.0 is Qt's default advance, matching the invalid-
+    # value fallback in canonical_letter_spacing. Extra tracking widens every
+    # word (roughly 13% at the old 1.15), which shrinks auto-fit results in
+    # narrow bubbles; it stays opt-in per format. Saved projects keep their
+    # stored value, so only fresh formats change.
+    letter_spacing: float = 1.0
     ligature_common: str = 'default'
     ligature_discretionary: str = 'enabled'
     ligature_contextual: str = 'default'

@@ -1,5 +1,6 @@
 
 from enum import Enum
+from collections import Counter
 from typing import List, Optional, Sequence, Union, Tuple
 import numpy as np
 import copy
@@ -15,7 +16,7 @@ except:
 from ..item import TextBlkItem, TextBlock
 from ...canvas import Canvas
 from .widgets import TransTextEdit, SourceTextEdit, TransPairWidget, TextEditListScrollArea, QVBoxLayout, Widget
-from ballontranslator.utils.fontformat import FontFormat
+from ballontranslator.utils.fontformat import FontFormat, TextAlignment, px2pt
 from .commands import (
     ApplyFontformatCommand,
     AutoLayoutCommand,
@@ -36,8 +37,8 @@ from ..formatting.panel import FontFormatPanel
 from ballontranslator.utils.config import pcfg
 from ballontranslator.utils import shared
 from ballontranslator.utils.imgproc_utils import extract_ballon_region, get_block_mask
-from ballontranslator.utils.text_processing import seg_text, is_cjk
-from ballontranslator.utils.text_layout import layout_text
+from ballontranslator.utils.text_processing import is_cjk
+from ballontranslator.utils.text_layout import layout_text, seg_text_paragraphs
 
 
 def build_path_reorder_map(
@@ -383,6 +384,8 @@ class SceneTextManager(QObject):
         self.canvas.paste_textblks.connect(self.onPasteBlkItems)
         self.canvas.format_textblks.connect(self.onFormatTextblks)
         self.canvas.layout_textblks.connect(self.onAutoLayoutTextblks)
+        self.canvas.center_in_bubble.connect(self.onCenterInBubble)
+        self.canvas.hyphenate_textblks.connect(self.onHyphenateTextblks)
         self.canvas.reset_angle.connect(self.onResetAngle)
         self.canvas.squeeze_blk.connect(self.onSqueezeBlk)
         self.canvas.path_reorder_finished.connect(
@@ -409,6 +412,7 @@ class SceneTextManager(QObject):
         self.pairwidget_list: List[TransPairWidget] = self.textEditList.pairwidget_list
 
         self.auto_textlayout_flag = False
+        self._bubble_counts = Counter()
         self.hovering_transwidget : TransTextEdit = None
 
         self._text_move_snapshot = {}
@@ -509,15 +513,24 @@ class SceneTextManager(QObject):
             self.textEditList.removeWidget(textwidget)
         self.pairwidget_list.clear()
 
-    def populateSceneTextitems(self):
+    def populateSceneTextitems(self) -> None:
         """Create scene items for the project's already-selected current page."""
         self.hovering_transwidget = None
-        for textblock in self.imgtrans_proj.current_block_list():
-            if textblock.font_family is None or textblock.font_family.strip() == '':
-                textblock.font_family = self.formatpanel.familybox.currentText()
-            self.addTextBlock(textblock)
-        if self.auto_textlayout_flag:
-            self.updateTextBlkList()
+        self._index_bubbles(self.imgtrans_proj.current_block_list())
+        # Pipeline auto-layout is one-shot for the page it just translated.
+        # Keep the flag sticky during this populate so addTextBlock can
+        # consume it, then clear it so later manual page visits preserve
+        # saved manual edits instead of re-running auto-layout.
+        should_autolayout = self.auto_textlayout_flag
+        try:
+            for textblock in self.imgtrans_proj.current_block_list():
+                if textblock.font_family is None or textblock.font_family.strip() == '':
+                    textblock.font_family = self.formatpanel.familybox.currentText()
+                self.addTextBlock(textblock)
+            if should_autolayout:
+                self.updateTextBlkList()
+        finally:
+            self.auto_textlayout_flag = False
 
     def updateSceneTextitems(
         self,
@@ -539,7 +552,7 @@ class SceneTextManager(QObject):
             blk_item.idx = len(self.textblk_item_list)
         else:
             translation = ''
-            if self.auto_textlayout_flag and not blk.vertical:
+            if self.auto_textlayout_flag:
                 translation = blk.translation
                 blk.translation = ''
             blk_item = TextBlkItem(blk, len(self.textblk_item_list), show_rect=self.canvas.textblock_mode)
@@ -783,7 +796,7 @@ class SceneTextManager(QObject):
         self.app_clipborad.setText(textlist, QClipboard.Mode.Clipboard)
 
 
-    def onPasteBlkItems(self, pos: QPointF):
+    def onPasteBlkItems(self, pos: Optional[QPointF]) -> None:
         if pos is None:
             pos_x, pos_y = 0, 0
         else:
@@ -793,6 +806,7 @@ class SceneTextManager(QObject):
         blkitem_list, pair_widget_list = [], []
         for blk in self.canvas.clipboard_blks:
             blk = copy.deepcopy(blk)
+            blk.bubble_polygon = None
             blk.adjust_pos(pos_x, pos_y)
             blkitem = self.addTextBlock(blk)
             pairw = self.pairwidget_list[-1]
@@ -811,18 +825,97 @@ class SceneTextManager(QObject):
             fmt = self.formatpanel.global_format
         self.apply_fontformat(fmt)
 
-    def onAutoLayoutTextblks(self):
+    def onAutoLayoutTextblks(self) -> None:
+        self._index_bubbles([item.blk for item in self.textblk_item_list])
         selected_blks = self.canvas.selected_text_items()
-        old_html_lst, old_rect_lst, trans_widget_lst = [], [], []
-        selected_blks = [blk for blk in selected_blks if not blk.fontformat.vertical]
+        old_html_lst, old_rect_lst, trans_widget_lst, old_alignment_lst = [], [], [], []
         if len(selected_blks) > 0:
             for blkitem in selected_blks:
                 old_html_lst.append(blkitem.toHtml())
                 old_rect_lst.append(blkitem.absBoundingRect(qrect=True))
+                old_alignment_lst.append(int(blkitem.fontformat.alignment))
                 trans_widget_lst.append(self.pairwidget_list[blkitem.idx].e_trans)
                 self.layout_textblk(blkitem)
 
-            self.canvas.push_undo_command(AutoLayoutCommand(selected_blks, old_rect_lst, old_html_lst, trans_widget_lst))
+            self.canvas.push_undo_command(AutoLayoutCommand(selected_blks, old_rect_lst, old_html_lst, trans_widget_lst, old_alignment_lst))
+
+    def onCenterInBubble(self) -> None:
+        """Center each selected text box on its bubble center.
+
+        Position-only apart from forcing Center alignment so wrapped lines
+        read as one centered block, matching the automatic bubble-fit path.
+        Rotated/transformed items and blocks without a detected outline are
+        skipped. One undo command covers the whole selection.
+
+        >>> callable(SceneTextManager.onCenterInBubble)
+        True
+        """
+        from ballontranslator.utils.bubble import bubble_inner_center
+        from .commands import CenterInBubbleCommand
+
+        selected = self.canvas.selected_text_items()
+        items: List[TextBlkItem] = []
+        before_positions: List[QPointF] = []
+        after_positions: List[QPointF] = []
+        before_alignments: List[int] = []
+        after_alignments: List[int] = []
+        for item in selected:
+            blk = getattr(item, 'blk', None)
+            polygon = getattr(blk, 'bubble_polygon', None)
+            if not polygon or item.rotation() != 0:
+                continue
+            if not item._text_transform_is_neutral():
+                continue
+            guide = bubble_inner_center(polygon)
+            if guide is None:
+                continue
+            bubble_x, bubble_y, _rect = guide
+            top_left = item.logical_position()
+            size = item.geometry_controller.logical_rect().size()
+            if size.width() < 1 or size.height() < 1:
+                continue
+            target = QPointF(
+                bubble_x - size.width() / 2.0,
+                bubble_y - size.height() / 2.0,
+            )
+            before = QPointF(top_left)
+            before_alignment = int(item.fontformat.alignment)
+            after_alignment = int(TextAlignment.Center)
+            if before == target and before_alignment == after_alignment:
+                continue
+            item.set_logical_position(target)
+            if before_alignment != after_alignment:
+                item.setAlignment(after_alignment)
+            items.append(item)
+            before_positions.append(before)
+            after_positions.append(QPointF(target))
+            before_alignments.append(before_alignment)
+            after_alignments.append(after_alignment)
+        if items:
+            self.canvas.push_undo_command(
+                CenterInBubbleCommand(
+                    items,
+                    before_positions,
+                    after_positions,
+                    before_alignments,
+                    after_alignments,
+                )
+            )
+
+    def onHyphenateTextblks(self) -> None:
+        from ..bubble_layout import hyphenate_document
+        items = [item for item in self.canvas.selected_text_items() if not item.blk.vertical]
+        if not items:
+            return
+        old_html = [item.toHtml() for item in items]
+        old_rects = [item.absBoundingRect(qrect=True) for item in items]
+        old_alignments = [int(item.fontformat.alignment) for item in items]
+        editors = [self.pairwidget_list[item.idx].e_trans for item in items]
+        for item, editor in zip(items, editors):
+            hyphenate_document(item.document(), pcfg.module.translate_target)
+            editor.setPlainText(item.toPlainText())
+        if any(item.toHtml() != html for item, html in zip(items, old_html)):
+            self.canvas.push_undo_command(AutoLayoutCommand(items, old_rects, old_html, editors, old_alignments))
 
     def onResetAngle(self):
         selected_blks = self.canvas.selected_text_items()
@@ -865,11 +958,98 @@ class SceneTextManager(QObject):
             self._update_selection_panels([item])
         session.activate_last_projective(item)
 
-    def layout_textblk(self, blkitem: TextBlkItem, text: str = None, mask: np.ndarray = None, bounding_rect: List = None, region_rect: List = None):
-        
-        '''
-        auto text layout, vertical writing is not supported yet.
-        '''
+    def _index_bubbles(self, blocks: Sequence[TextBlock]) -> None:
+        self._bubble_counts = Counter(
+            tuple(tuple(point) for point in block.bubble_polygon)
+            for block in blocks if block.bubble_polygon
+        )
+
+    def _fit_shared_bubble_text(
+        self, blkitem: TextBlkItem, text: Optional[str],
+    ) -> bool:
+        """Fit one block of a shared outline into its own partition cell.
+
+        Connected lobes (like a `HEY!! YU!!` header flowing into its body) share
+        one detected polygon. Fitting every sibling to the full interior would
+        stack them on top of each other; skipping the fit falls back to a mask
+        layout outside the spikes. :meth:`split_connected_bubble` partitions the
+        shared outline into one polygon per sibling — neck decomposition first,
+        perpendicular-bisector Voronoi fallback (koharu flow_cells) — and each
+        block fits its own cell's interior.
+
+        >>> callable(SceneTextManager._fit_shared_bubble_text)
+        True
+        """
+        from ..bubble_layout import fit_text_to_bubble
+        from ballontranslator.utils.bubble import (
+            bubble_inner_rect,
+            split_connected_bubble,
+        )
+
+        polygon = blkitem.blk.bubble_polygon
+        if not polygon:
+            return False
+        key = tuple(tuple(point) for point in polygon)
+        blocks = self.imgtrans_proj.current_block_list()
+        positions = [
+            position for position, block in enumerate(blocks)
+            if block.bubble_polygon
+            and tuple(tuple(point) for point in block.bubble_polygon) == key
+        ]
+        if len(positions) < 2:
+            return False
+        try:
+            current_pos = next(
+                position for position in positions
+                if blocks[position] is blkitem.blk
+            )
+        except StopIteration:
+            return False
+        centers: list = []
+        for position in positions:
+            block = blocks[position]
+            try:
+                center = block.center()
+                centers.append((float(center[0]), float(center[1])))
+            except (AttributeError, TypeError, ValueError):
+                rect = block.bounding_rect()
+                centers.append(
+                    (float(rect[0] + rect[2] / 2), float(rect[1] + rect[3] / 2))
+                )
+        rank = positions.index(current_pos)
+        lobes = split_connected_bubble(polygon, centers)
+        if lobes is None:
+            return False
+        try:
+            lobe_rect = bubble_inner_rect(lobes[rank])
+        except ValueError:
+            lobe_rect = None
+        if lobe_rect is None or min(lobe_rect[2:]) < 4:
+            return False
+        if not fit_text_to_bubble(
+            blkitem, text, hyphenate=True,
+            language=pcfg.module.translate_target,
+            target_rect=lobe_rect,
+        ):
+            return False
+        if len(self.pairwidget_list) > blkitem.idx:
+            self.pairwidget_list[blkitem.idx].e_trans.setPlainText(
+                blkitem.toPlainText()
+            )
+        return True
+
+    def layout_textblk(
+        self, blkitem: TextBlkItem, text: Optional[str] = None,
+        mask: Optional[np.ndarray] = None, bounding_rect: Optional[List] = None,
+        region_rect: Optional[List] = None,
+    ) -> Optional[bool]:
+        """Auto layout through bubble fit or balloon-aware line breaking.
+
+        Vertical text runs the same DP transposed instead of opting out.
+
+        >>> callable(SceneTextManager.layout_textblk)
+        True
+        """
 
         img = self.imgtrans_proj.img_array
         if img is None:
@@ -877,10 +1057,21 @@ class SceneTextManager(QObject):
 
         src_is_cjk = is_cjk(pcfg.module.translate_source)
         tgt_is_cjk = is_cjk(pcfg.module.translate_target)
+        vertical = bool(blkitem.blk.vertical)
 
-        # disable for vertical writing
-        if blkitem.blk.vertical:
-            return
+        if blkitem.blk.bubble_polygon is not None:
+            from ..bubble_layout import fit_text_to_bubble
+            key = tuple(tuple(point) for point in blkitem.blk.bubble_polygon)
+            shared_bubble = self._bubble_counts[key] > 1
+            if not shared_bubble and fit_text_to_bubble(
+                blkitem, text, hyphenate=True,
+                language=pcfg.module.translate_target,
+            ):
+                if len(self.pairwidget_list) > blkitem.idx:
+                    self.pairwidget_list[blkitem.idx].e_trans.setPlainText(blkitem.toPlainText())
+                return True
+            if shared_bubble and self._fit_shared_bubble_text(blkitem, text):
+                return True
         
         old_br = blkitem.absBoundingRect(qrect=True)
         old_br = [old_br.x(), old_br.y(), old_br.width(), old_br.height()]
@@ -917,11 +1108,13 @@ class SceneTextManager(QObject):
         else:
             mask_xyxy = [bounding_rect[0], bounding_rect[1], bounding_rect[0]+bounding_rect[2], bounding_rect[1]+bounding_rect[3]]
         
-        words, delimiter = seg_text(text, pcfg.module.translate_target)
-        if len(words) < 1:
+        words, wl_list, delimiter, glue = seg_text_paragraphs(
+            text, pcfg.module.translate_target,
+            lambda word: get_words_length_list(QFontMetricsF(blk_font), [word])[0],
+        )
+        if len([word for word in words if word != '\n']) < 1:
             return
 
-        wl_list = get_words_length_list(QFontMetricsF(blk_font), words)
         text_w, text_h = text_size_func(text)
         text_area = text_w * text_h
         if tgt_is_cjk:
@@ -943,6 +1136,13 @@ class SceneTextManager(QObject):
                 ballon_area_thresh = 1.7
                 downscale_constraint = 0.6
                 resize_ratio = np.clip(min(area_ratio / ballon_area_thresh, region_rect [2] / max(wl_list)), downscale_constraint, 1.0)
+                # Same source-size cap as the horizontal branch below: a
+                # vertical source run translated horizontally follows the
+                # raw's font size instead of filling the region when the
+                # detected size came out oversized.
+                detected = max(0.0, float(getattr(blkitem.blk, '_detected_font_size', -1) or -1))
+                if detected > 0 and blk_font.pointSizeF() > 0:
+                    resize_ratio = min(resize_ratio, px2pt(detected) * 1.25 / blk_font.pointSizeF())
 
             else:
                 if not src_is_cjk:
@@ -958,6 +1158,14 @@ class SceneTextManager(QObject):
                     resize_ratio_src = src_width / (sum(wl_list) + max((len(wl_list) - 1 - len(blkitem.blk.lines_array())), 0) * delimiter_len)
                     resize_ratio = max(resize_ratio_src * 1.5, 0.5)
                 resize_ratio = min(max(resize_ratio, 0.6), 1)
+                # Scanlation practice matches the raw instead of filling: cap at a
+                # little above the detected source size, like the bubble path.
+                # The gate above already yields to an explicit global-size
+                # override (let_fntsize_flag).
+                detected = max(0.0, float(getattr(blkitem.blk, '_detected_font_size', -1) or -1))
+                if detected > 0 and blk_font.pointSizeF() > 0:
+                    cap_ratio = px2pt(detected) * 1.25 / blk_font.pointSizeF()
+                    resize_ratio = min(resize_ratio, cap_ratio)
 
         if resize_ratio != 1:
             new_font_size = blk_font.pointSizeF() * resize_ratio   
@@ -985,7 +1193,7 @@ class SceneTextManager(QObject):
                 centroid[0] = int(abs_centroid[0] - mask_xyxy[0])
                 centroid[1] = int(abs_centroid[1] - mask_xyxy[1])
 
-        new_text, xywh, start_from_top, adjust_xy = layout_text(
+        new_text, xywh = layout_text(
             blkitem.blk,
             mask, 
             mask_xyxy, 
@@ -995,11 +1203,9 @@ class SceneTextManager(QObject):
             delimiter, 
             delimiter_len, 
             line_height, 
-            0, 
             max_central_width,
-            src_is_cjk=src_is_cjk,
-            tgt_is_cjk=tgt_is_cjk,
-            ref_src_lines=ref_src_lines
+            vertical=vertical,
+            glue=glue,
         )
 
         # font size post adjustment
@@ -1024,9 +1230,23 @@ class SceneTextManager(QObject):
         if restore_charfmts:
             char_fmts = blkitem.get_char_fmts()        
         
+        # Centered lines read as one centered block, matching the bubble
+        # path. AutoLayoutCommand snapshots the old alignment for undo.
+        if int(blkitem.fontformat.alignment) != int(TextAlignment.Center):
+            blkitem.setAlignment(int(TextAlignment.Center), repaint_background=False)
         ffmt = QFontMetricsF(blk_font)
-        maxw = max([ffmt.horizontalAdvance(t) for t in new_text.split('\n')])
-        blkitem.set_size(maxw * 1.5, xywh[3], set_layout_maxsize=True)
+        if vertical:
+            # Columns break along height: width holds every column pitch,
+            # height holds the tallest column, then squeeze settles the box.
+            col_heights = [ffmt.horizontalAdvance(t) for t in new_text.split('\n')]
+            blkitem.set_size(
+                max(1.0, len(col_heights) * line_height * 1.5),
+                max(1.0, max(col_heights) * 1.2 if col_heights else line_height),
+                set_layout_maxsize=True,
+            )
+        else:
+            maxw = max([ffmt.horizontalAdvance(t) for t in new_text.split('\n')])
+            blkitem.set_size(maxw * 1.5, xywh[3], set_layout_maxsize=True)
         blkitem.setPlainText(new_text)
         if len(self.pairwidget_list) > blkitem.idx:
             self.pairwidget_list[blkitem.idx].e_trans.setPlainText(new_text)
