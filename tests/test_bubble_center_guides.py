@@ -2,7 +2,6 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-import importlib.util
 import unittest
 
 from qtpy.QtCore import QCoreApplication, QEvent, QPointF, QRectF, Qt
@@ -198,7 +197,7 @@ class BubbleCenterItemTests(unittest.TestCase):
         item = TextBlkItem(block, 0)
         self.addCleanup(item.deleteLater)
         self.assertTrue(
-            fit_text_to_bubble(item, None, hyphenate=False, language='English')
+            fit_text_to_bubble(item, None, language='English')
         )
         box = item.absBoundingRect(qrect=True)
         self.assertGreaterEqual(
@@ -219,19 +218,17 @@ class BubbleCenterItemTests(unittest.TestCase):
         item = TextBlkItem(block, 0)
         self.addCleanup(item.deleteLater)
         self.assertTrue(
-            fit_text_to_bubble(item, None, hyphenate=False, language='English')
+            fit_text_to_bubble(item, None, language='English')
         )
         box = item.absBoundingRect(qrect=True)
         self.assertLessEqual(
             _longest_word_width(item), box.width() + 0.5
         )
 
-    @unittest.skipUnless(
-        importlib.util.find_spec('pyphen'), 'Optional Pyphen is not installed'
-    )
-    def test_hyphenation_never_grows_floor_fit(self) -> None:
-        # A clean fit pinned to the 4pt floor stays intact: hyphenation must
-        # not shred it into `KU-NIE-DA!` to buy a bigger size.
+    def test_floor_fit_stays_intact(self) -> None:
+        # A clean fit pinned to the 4pt floor grows via dictionary splits:
+        # the fit never inserts soft hyphens and never drops letters, and
+        # every split carries a visible hyphen.
         from ballontranslator.ui.text_engine.bubble_layout import (
             fit_text_to_bubble,
         )
@@ -241,22 +238,20 @@ class BubbleCenterItemTests(unittest.TestCase):
         item = TextBlkItem(block, 0)
         self.addCleanup(item.deleteLater)
         self.assertTrue(
-            fit_text_to_bubble(item, None, hyphenate=True, language='English')
+            fit_text_to_bubble(item, None, language='English')
         )
         self.assertNotIn('\u00ad', item.toPlainText())
-        size = item.document().begin().begin().fragment().charFormat().fontPointSize()
-        self.assertLessEqual(size, 5.0)
         self.assertEqual(
-            item.toPlainText().replace('\n', ' '),
-            'KUNIEDA! SMARTPHONES ARE PROHIBITED.',
+            item.toPlainText().replace('-', '').replace('\n', '').replace(' ', ''),
+            'KUNIEDA!SMARTPHONESAREPROHIBITED.',
         )
+        size = item.document().begin().begin().fragment().charFormat().fontPointSize()
+        self.assertLess(size, 6.0)
 
-    @unittest.skipUnless(
-        importlib.util.find_spec('pyphen'), 'Optional Pyphen is not installed'
-    )
-    def test_hyphenation_capped_when_clean_fails(self) -> None:
-        # When nothing fits intact, hyphenation stays a small fitting tool
-        # instead of chasing a giant shredded size.
+    def test_unfittable_bubble_keeps_words_intact(self) -> None:
+        # A bubble too narrow for whole words gets the typesetter rescue:
+        # words split at dictionary points with literal hyphens so letters
+        # are never dropped and soft hyphens are never inserted.
         from ballontranslator.ui.text_engine.bubble_layout import (
             fit_text_to_bubble,
         )
@@ -266,10 +261,16 @@ class BubbleCenterItemTests(unittest.TestCase):
         item = TextBlkItem(block, 0)
         self.addCleanup(item.deleteLater)
         self.assertTrue(
-            fit_text_to_bubble(item, None, hyphenate=True, language='English')
+            fit_text_to_bubble(item, None, language='English')
+        )
+        self.assertNotIn('\u00ad', item.toPlainText())
+        self.assertEqual(
+            item.toPlainText().replace('-', '').replace('\n', '').replace(' ', ''),
+            'KUNIEDA!SMARTPHONESAREPROHIBITED.',
         )
         size = item.document().begin().begin().fragment().charFormat().fontPointSize()
-        self.assertLessEqual(size, 6.01)
+        self.assertGreater(size, 3.99)
+        self.assertLessEqual(size, 8.0)
 
     def test_selected_guide_paints_center_cross(self) -> None:
         canvas = Canvas()

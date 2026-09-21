@@ -158,14 +158,23 @@ vertically so top/bottom and left/right margins match. This is rectangular
 interior fitting, not per-line contour
 wrapping. The font grows or shrinks to the largest fitting size rather
 than being capped by the detector's source-text estimate. The search reserves
-effect padding for stroked ink. Hyphenation during fitting is a last resort:
-the clean search runs first and soft hyphens are only considered when it
-pins to (or misses) the readable floor, so mid-word
-splits never trade readability for size. Dash compounds split after interior
+effect padding for stroked ink. Words are never torn mid-letter: a clean
+fit that reads at normal dialogue size stays intact, and for Latin text the
+word-break tier splits long words (5+ letters, dictionary-gated) at hyphen points
+(`PROHIB-`/`ITED`) only when the intact fit is below dialogue size or fails
+entirely, and only when the split buys at least 50% more size — the
+typesetter move that keeps one oversized word from pinning the whole bubble
+to an unreadable size. Short dialogue (one or two lines) additionally tries
+the outline's fattest horizontal slab: a pinch-waisted bubble's maximal
+rectangle can be far narrower than its middle rows (page 007: `Kunieda...`
+pinned to a 92px interior while the rows are 148px), so lettering like a
+single line or two rides the widest rows and is adopted when it wins a real
+gain and stays inside the outline. The fit also verifies with Qt's own text
+layout that no line tears mid-word at the chosen width. Dash compounds split after interior
 dashes (`EHH—`/`BUT`) with no dictionary and render literally, and lines
 never start with a dash (`Hayate-`/`kun`, never `Hayate`/`-kun`). Growth caps
-a little above the detected source size instead of filling bubbles, while
-shrinking is unaffected. Breaks avoid stranding closing
+at twice the detected source size so short dialogue can fill a roomy balloon,
+while shrinking is unaffected. Breaks avoid stranding closing
 punctuation on its own line when joining it still fits. The mask fallback
 path centers like the bubble path. Missing
 geometry, rotated text, and transformed text retain the previous

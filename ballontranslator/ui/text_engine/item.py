@@ -16,7 +16,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Qt, QRect, QRectF, QPoint, QPointF, QMimeData, Signal
 from qtpy.QtGui import (QKeyEvent, QKeySequence, QFont, QTextCursor,
                        QInputMethodEvent, QFocusEvent, QPainter, QColor, QTextCharFormat,
-                       QBrush, QFontMetrics, QPen,
+                       QBrush, QFontMetrics, QPainterPath, QPen,
                        QTextBlockFormat)
 
 from ballontranslator.utils.textblock import TextBlock
@@ -1231,7 +1231,7 @@ class TextBlkItem(QGraphicsTextItem):
         )
         if visible:
             badge.set_number(self.order_number())
-            outline = self.geometry_controller.visual_outline_in_item()
+            outline = self._ui_guide_outline()
             visible = not outline.isEmpty()
             if visible:
                 anchor = outline.boundingRect().topLeft()
@@ -1252,6 +1252,48 @@ class TextBlkItem(QGraphicsTextItem):
         self._order_number_override = order_number
         self._sync_order_badge()
 
+    def _bubble_guide_path(self) -> Optional['QPainterPath']:
+        """Return the detected bubble outline in item coordinates, if any.
+
+        The selection highlight of a bubble-linked block should trace the
+        balloon, not the fitted text box: the fitted box is a sliver in a
+        tall balloon or an oversized slab over a diagonal one, and its dashed
+        outline then floats over artwork. Rotated and transformed items keep
+        the rectangular outline — the polygon is page-space while their
+        visual shape is transform-owned.
+        """
+        blk = self.blk
+        polygon = getattr(blk, 'bubble_polygon', None)
+        if not polygon or self.rotation() != 0 or not self._text_transform_is_neutral():
+            return None
+        if self.scene() is None:
+            return None
+        try:
+            path = QPainterPath()
+            for index, point in enumerate(polygon):
+                mapped = self.mapFromScene(QPointF(float(point[0]), float(point[1])))
+                if index == 0:
+                    path.moveTo(mapped)
+                else:
+                    path.lineTo(mapped)
+            path.closeSubpath()
+            return path
+        except (TypeError, ValueError):
+            return None
+
+    def _ui_guide_outline(self) -> 'QPainterPath':
+        """Return the dashed selection guide path.
+
+        Selected bubble-linked blocks highlight their balloon so the outline
+        matches the shape the text belongs to; everything else keeps the
+        fitted text rectangle.
+        """
+        if self.isSelected():
+            bubble = self._bubble_guide_path()
+            if bubble is not None and not bubble.isEmpty():
+                return bubble
+        return self.geometry_controller.visual_outline_in_item()
+
     def _paint_ui_guide(self, painter: QPainter) -> None:
         """Paint selection and block guides outside cached effect surfaces."""
         if (
@@ -1263,7 +1305,7 @@ class TextBlkItem(QGraphicsTextItem):
         draw_rect = self.draw_rect and not self.under_ctrl
         if not selected and not draw_rect:
             return
-        outline = self.geometry_controller.visual_outline_in_item()
+        outline = self._ui_guide_outline()
         if outline.isEmpty():
             return
         painter.save()

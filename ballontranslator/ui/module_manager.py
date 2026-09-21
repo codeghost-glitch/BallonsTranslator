@@ -15,7 +15,7 @@ from .torch_install_dialog import confirm_torch_install_device
 from ballontranslator.utils.logger import logger as LOGGER
 from ballontranslator.utils.registry import LazyModuleError, Registry
 from ballontranslator.utils.imgproc_utils import enlarge_window, get_block_mask
-from ballontranslator.utils.io_utils import text_is_empty
+from ballontranslator.utils.io_utils import text_has_content
 from ballontranslator.modules.translators import MissingTranslatorParams
 from ballontranslator.modules.exceptions import (
     LLMApiKeyRequiredError,
@@ -1138,7 +1138,7 @@ class ImgtransThread(QThread):
                         blk_list_updated = []
                         for blk in blk_list:
                             text = blk.get_text()
-                            if text_is_empty(text):
+                            if not text_has_content(text):
                                 blk_removed.append(blk)
                             else:
                                 blk_list_updated.append(blk)

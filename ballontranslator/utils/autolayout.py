@@ -183,7 +183,7 @@ def largest_fitting_font_size(
     ...     9.0, 24.0, lambda s: s, lambda s: 10.0 <= s <= 12.0) <= 12.0
     True
     """
-    probes = 8
+    probes = min(24, max(8, int((maximum - minimum) / 2.5)))
     if maximum - minimum <= 1e-9:
         candidate = layout_at(maximum)
         return candidate if fits(candidate) else None

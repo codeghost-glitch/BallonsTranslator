@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Union
 import base64
 import traceback
+import unicodedata
 
 from .logger import logger as LOGGER
 import requests
@@ -251,9 +252,31 @@ def text_is_empty(text) -> bool:
             t_is_empty = text_is_empty(t)
             if not t_is_empty:
                 return False
-        return True    
+        return True
     elif text is None:
         return True
+
+def text_has_content(text) -> bool:
+    """Whether OCR text contains any letter or digit.
+
+    Punctuation- and symbol-only results ('・・・・', '?!') carry no
+    translatable content, so they count as empty for OCR cleanup.
+
+    >>> text_has_content('・・・・')
+    False
+    >>> text_has_content('?')
+    False
+    >>> text_has_content(['いえ', '…!'])
+    True
+    >>> text_has_content('  ')
+    False
+    """
+    if isinstance(text, str):
+        return any(unicodedata.category(ch)[0] in ('L', 'N') for ch in text)
+    if isinstance(text, list):
+        return any(text_has_content(t) for t in text)
+    # Unknown payload types count as content: only remove what we understand.
+    return bool(text)
     
 def empty_func(*args, **kwargs):
     return

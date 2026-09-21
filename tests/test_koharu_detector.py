@@ -251,14 +251,82 @@ class KoharuDetectorTests(unittest.TestCase):
         self.assertEqual([block.label for block in blocks], ['text'])
         np.testing.assert_array_equal(mask, masks[0].astype(np.uint8) * 255)
 
+    def test_near_tie_onomatopoeia_claim_does_not_evict_dialogue_text(self) -> None:
+        # Page 007: one dialogue glyph (`あ`) the model scored as both
+        # classes within noise — text 0.443, onomatopoeia 0.454. Sound
+        # effects are disabled, so the winning claim is discarded anyway;
+        # it must not delete the dialogue with it.
+        masks = np.zeros((3, 20, 30), dtype=bool)
+        masks[0, 2:7, 3:8] = True
+        masks[1, 2:7, 3:8] = True
+        masks[2, 0:12, 0:14] = True
+        self.detector.model = Mock()
+        self.detector.model.predict.return_value = _SuppressibleDetections(
+            xyxy=np.array([[2, 1, 9, 8], [2, 1, 9, 8], [0, 0, 14, 12]]),
+            class_id=np.array([0, 1, 2]),
+            confidence=np.array([0.443, 0.454, 0.95]),
+            mask=masks,
+        )
+        mask, blocks = self.detector.detect(self.image)
+        self.assertEqual([block.label for block in blocks], ['text'])
+        self.assertEqual(blocks[0].xyxy, [2, 1, 9, 8])
+        np.testing.assert_array_equal(mask, masks[0].astype(np.uint8) * 255)
+
+    def test_clear_onomatopoeia_preference_still_blocks_text_resurfacing(self) -> None:
+        # The protection contract: a region the model clearly prefers as
+        # onomatopoeia (0.65 over 0.52) must not resurface as text when
+        # sound effects are disabled.
+        masks = np.zeros((2, 20, 30), dtype=bool)
+        masks[0, 2:7, 3:8] = True
+        masks[1, 2:7, 3:8] = True
+        self.detector.model = Mock()
+        self.detector.model.predict.return_value = _SuppressibleDetections(
+            xyxy=np.array([[2, 1, 9, 8], [2, 1, 9, 8]]),
+            class_id=np.array([0, 1]),
+            confidence=np.array([0.52, 0.65]),
+            mask=masks,
+        )
+        mask, blocks = self.detector.detect(self.image)
+        self.assertEqual(blocks, [])
+        self.assertFalse(mask.any())
+
     def test_merged_coarse_duplicate_of_column_text_is_suppressed(self) -> None:
         # Page 15 doubling: the model emitted one merged instance over two
         # vertical columns alongside the per-column instances. Box IoU between
         # the union and either column is only ~0.4, so the union must be
         # dropped through mask containment instead — the finer per-column
         # instances survive.
+        masks = np.zeros((3, 20, 30), dtype=bool)
+        masks[0, 2:18, 2:12] = True
+        masks[0, 2:18, 17:28] = True
+        masks[1, 2:18, 2:12] = True
+        masks[2, 2:18, 17:28] = True
+        self.detector.model = Mock()
+        self.detector.model.predict.return_value = _SuppressibleDetections(
+            xyxy=np.array([[2, 2, 28, 18], [2, 2, 12, 18], [17, 2, 28, 18]]),
+            class_id=np.array([0, 0, 0]),
+            confidence=np.array([0.9, 0.8, 0.8]),
+            mask=masks,
+        )
+        mask, blocks = self.detector.detect(self.image)
+        self.assertEqual(
+            sorted(tuple(block.xyxy) for block in blocks),
+            [(2, 2, 12, 18), (17, 2, 28, 18)],
+        )
+        np.testing.assert_array_equal(
+            mask, (masks[1] | masks[2]).astype(np.uint8) * 255,
+        )
+
+    def test_coarse_instance_with_unique_text_survives_containment(self) -> None:
+        # The model emitted one instance covering both columns of a
+        # wrapped sentence plus a single-column instance of the left half.
+        # Evicting the two-column run deleted the other column's text. The
+        # coarse instance carries ink no finer instance
+        # covers, so it stays and the contained instance — whose glyphs are
+        # already inside it — drops.
         masks = np.zeros((2, 20, 30), dtype=bool)
-        masks[0, 2:18, 2:28] = True
+        masks[0, 2:18, 2:12] = True
+        masks[0, 2:18, 17:28] = True
         masks[1, 2:18, 2:12] = True
         self.detector.model = Mock()
         self.detector.model.predict.return_value = _SuppressibleDetections(
@@ -268,8 +336,8 @@ class KoharuDetectorTests(unittest.TestCase):
             mask=masks,
         )
         mask, blocks = self.detector.detect(self.image)
-        self.assertEqual([block.xyxy for block in blocks], [[2, 2, 12, 18]])
-        np.testing.assert_array_equal(mask, masks[1].astype(np.uint8) * 255)
+        self.assertEqual([block.xyxy for block in blocks], [[2, 2, 28, 18]])
+        np.testing.assert_array_equal(mask, masks[0].astype(np.uint8) * 255)
 
     def test_small_instance_inside_text_region_survives_nms(self) -> None:
         # A small instance nested in a big region (furigana, caption) must not
@@ -455,18 +523,20 @@ class KoharuDetectorTests(unittest.TestCase):
 
         # Two vertical columns of 20px glyphs inside a 95px-wide bbox: the
         # bbox minimum dimension (95) equals the whole column pair, not the
-        # glyph size.
+        # glyph size. Glyphs leave inter-glyph gaps along the flow. The
+        # 8px output grid snaps 20 to 24.
         two_columns = np.zeros((120, 95), dtype=bool)
-        two_columns[10:110, 10:30] = True
-        two_columns[10:110, 55:75] = True
-        self.assertEqual(_estimate_font_size(two_columns, True, 95), 20)
+        for glyph_start in range(6, 106, 30):
+            two_columns[glyph_start:glyph_start + 24, 10:30] = True
+            two_columns[glyph_start:glyph_start + 24, 55:75] = True
+        self.assertEqual(_estimate_font_size(two_columns, True, 95), 24)
 
         # Horizontal lines plus a smaller furigana band: the median ignores it.
         lines = np.zeros((80, 200), dtype=bool)
         lines[5:13, 20:180] = True
         lines[30:48, 20:180] = True
         lines[60:78, 20:180] = True
-        self.assertEqual(_estimate_font_size(lines, False, 80), 18)
+        self.assertEqual(_estimate_font_size(lines, False, 80), 16)
 
         # Empty masks keep the bbox-based fallback.
         self.assertEqual(_estimate_font_size(np.zeros((40, 40), dtype=bool), False, 40), 40)
@@ -474,14 +544,16 @@ class KoharuDetectorTests(unittest.TestCase):
         # Blob-like masks tighten to their single band when it is smaller.
         blob = np.zeros((30, 30), dtype=bool)
         blob[5:25, 5:25] = True
-        self.assertEqual(_estimate_font_size(blob, False, 30), 20)
+        self.assertEqual(_estimate_font_size(blob, False, 30), 24)
 
     def test_detect_font_size_uses_mask_band_not_bbox_min_dimension(self) -> None:
         masks = np.zeros((1, 60, 120), dtype=bool)
         # One text run of two 8px-wide columns in a 32x40 bbox: the old
-        # min-dimension estimate (32) is 4x the real glyph size.
-        masks[0, 10:50, 24:32] = True
-        masks[0, 10:50, 48:56] = True
+        # min-dimension estimate (32) is 4x the real glyph size. Glyphs
+        # leave inter-glyph gaps along the flow, like real segmentation.
+        for glyph_start in range(12, 48, 16):
+            masks[0, glyph_start:glyph_start + 12, 24:32] = True
+            masks[0, glyph_start:glyph_start + 12, 48:56] = True
         self.detector.model = Mock()
         self.detector.model.predict.return_value = _SuppressibleDetections(
             xyxy=np.array([[24, 10, 56, 50]]),
@@ -500,6 +572,7 @@ class KoharuDetectorTests(unittest.TestCase):
         masks = np.zeros((3, 60, 120), dtype=bool)
         # Right run: one 6px column. Left run: one 12px column. The shared
         # bubble merges them; the merged size must be the smaller glyph.
+        # The 8px output grid snaps 6 to 8 and 12 to 16.
         masks[0, 10:50, 90:96] = True
         masks[1, 10:50, 20:32] = True
         masks[2, 10:50, 14:100] = True
@@ -514,8 +587,8 @@ class KoharuDetectorTests(unittest.TestCase):
         self.detector.set_param_value('auto detect text orientation', False)
         _, blocks = self.detector.detect(np.zeros((60, 120, 3), dtype=np.uint8))
         self.assertEqual(len(blocks), 1)
-        self.assertEqual(blocks[0].font_size, 6)
-        self.assertEqual(blocks[0]._detected_font_size, 6)
+        self.assertEqual(blocks[0].font_size, 8)
+        self.assertEqual(blocks[0]._detected_font_size, 8)
 
     def test_non_finite_box_skips_candidate_without_losing_detections(self) -> None:
         masks = np.zeros((2, 60, 120), dtype=bool)

@@ -1027,7 +1027,7 @@ class SceneTextManager(QObject):
         if lobe_rect is None or min(lobe_rect[2:]) < 4:
             return False
         if not fit_text_to_bubble(
-            blkitem, text, hyphenate=True,
+            blkitem, text,
             language=pcfg.module.translate_target,
             target_rect=lobe_rect,
         ):
@@ -1064,7 +1064,7 @@ class SceneTextManager(QObject):
             key = tuple(tuple(point) for point in blkitem.blk.bubble_polygon)
             shared_bubble = self._bubble_counts[key] > 1
             if not shared_bubble and fit_text_to_bubble(
-                blkitem, text, hyphenate=True,
+                blkitem, text,
                 language=pcfg.module.translate_target,
             ):
                 if len(self.pairwidget_list) > blkitem.idx:
@@ -1263,6 +1263,30 @@ class SceneTextManager(QObject):
         if restore_charfmts:
             self.restore_charfmts(blkitem, text, new_text, char_fmts)
         blkitem.squeezeBoundingRect()
+        # The bubble fit bailed to the mask layout, but the block still has a
+        # detected outline: land it on the bubble's inner center like the fit
+        # path and the manual Center-in-bubble command do, instead of leaving
+        # the mask placement wherever the source text was. Skip shared
+        # outlines — siblings would stack on one center.
+        from ballontranslator.utils.bubble import bubble_inner_center
+
+        polygon = blkitem.blk.bubble_polygon
+        if (
+            polygon is not None
+            and self._bubble_counts.get(
+                tuple(tuple(point) for point in polygon), 0
+            ) <= 1
+            and blkitem.rotation() == 0
+            and blkitem._text_transform_is_neutral()
+        ):
+            guide = bubble_inner_center(polygon)
+            if guide is not None:
+                size = blkitem.geometry_controller.logical_rect().size()
+                if size.width() >= 1 and size.height() >= 1:
+                    blkitem.set_logical_position(QPointF(
+                        float(guide[0]) - size.width() / 2.0,
+                        float(guide[1]) - size.height() / 2.0,
+                    ))
         return True
     
     def restore_charfmts(self, blkitem: TextBlkItem, text: str, new_text: str, char_fmts: List[QTextCharFormat]):

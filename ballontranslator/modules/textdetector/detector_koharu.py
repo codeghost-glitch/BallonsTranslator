@@ -22,6 +22,12 @@ def _explicit_return_dict(
         kwargs['return_dict'] = module.config.return_dict
     return args, kwargs
 
+# An onomatopoeia rival evicts a text claim only when it wins by more than
+# this margin: sub-threshold classifier noise (one dialogue glyph scored
+# ~0.45 as both classes) must not delete dialogue the text threshold already
+# accepted, when the winning claim is itself about to be discarded.
+_SFX_EVICTION_MARGIN = 0.1
+
 def _intersection_over_union(left: np.ndarray, right: np.ndarray) -> float:
     """IoU of two ``xyxy`` boxes. Non-finite coordinates never suppress: every
     comparison against NaN is False, so such boxes stay candidates and are
@@ -35,6 +41,53 @@ def _intersection_over_union(left: np.ndarray, right: np.ndarray) -> float:
     right_area = max(float(right[2] - right[0]), 0.0) * max(float(right[3] - right[1]), 0.0)
     return intersection / (left_area + right_area - intersection)
 
+def _cross_class_loses(
+    class_id: int, box: np.ndarray, score: float,
+    text_boxes: List[Tuple[np.ndarray, float]],
+    sfx_boxes: List[Tuple[np.ndarray, float]],
+    detect_sfx: bool,
+) -> bool:
+    """Whether a text/onomatopoeia candidate yields to a rival of the other
+    class claiming the same region.
+
+    The detector often fires both classes over one sound effect with nearly
+    identical boxes. The higher-scoring class owns the region (ties go to
+    onomatopoeia, the more specific label). With 'detect sound effects'
+    disabled, a region the model clearly prefers as onomatopoeia must not
+    resurface as a mislabeled text block — but a rival winning by less than
+    classifier noise must not evict a text claim the text threshold already
+    accepted: one ambiguous dialogue glyph (page 007's `あ`) fired as text
+    0.443 and onomatopoeia 0.454, and the discarded onomatopoeia claim would
+    otherwise delete the dialogue.
+
+    >>> whirr = np.array([151., 1061., 305., 1824.])
+    >>> text = [(whirr, 0.52)]
+    >>> sfx = [(whirr, 0.65)]
+    >>> _cross_class_loses(0, whirr, 0.52, text, sfx, detect_sfx=False)
+    True
+    >>> _cross_class_loses(0, whirr, 0.52, text, sfx, detect_sfx=True)
+    True
+    >>> _cross_class_loses(1, whirr, 0.65, text, sfx, detect_sfx=True)
+    False
+    >>> _cross_class_loses(1, whirr, 0.65, text, sfx, detect_sfx=False)
+    True
+    >>> near_tie = np.array([627., 659., 662., 698.])
+    >>> _cross_class_loses(0, near_tie, 0.443, None, [(near_tie, 0.454)], detect_sfx=False)
+    False
+    """
+    if class_id == 0:
+        return any(
+            _intersection_over_union(box, sfx_box) >= 0.5
+            and sfx_score >= score + _SFX_EVICTION_MARGIN
+            for sfx_box, sfx_score in sfx_boxes
+        )
+    if not detect_sfx:
+        return True
+    return any(
+        _intersection_over_union(box, text_box) >= 0.5 and text_score > score
+        for text_box, text_score in text_boxes
+    )
+
 def _containment_duplicate(
     first: int, second: int, xyxy: np.ndarray, masks: np.ndarray,
 ) -> Optional[Tuple[int, int]]:
@@ -42,8 +95,8 @@ def _containment_duplicate(
     duplicate that already contains the other's glyphs.
 
     RF-DETR sometimes emits one coarse instance spanning several text columns
-    alongside the per-column instances (e.g. page 15: a union box over two
-    vertical scream columns). Box IoU cannot see this (a union of two columns
+    alongside the per-column instances (e.g. a union box over two vertical
+    columns). Box IoU cannot see this (a union of two columns
     has ~0.4 IoU with either column), so the pair is a duplicate when the
     smaller box sits inside the bigger one and its mask pixels are already
     covered by the bigger instance's mask. A 0.2 area-ratio floor keeps small
@@ -106,9 +159,12 @@ def _non_maximum_suppression(
     same-label pairs at or above the IoU threshold are considered duplicates
     (a bubble and a panel may legitimately share a box). Containment
     duplicates also collapse when masks are available: of a coarse/fine pair
-    where the fine box sits inside the coarse one with the same glyphs, the
-    finer instance is kept so per-column text is not doubled by a merged
-    detection.
+    where the fine box sits inside the coarse one, the pair resolves by
+    coverage — the coarse instance is a merged duplicate only when the finer
+    instances contained in it already cover ~all its ink (a union over two
+    columns); otherwise the coarse instance carries unique glyphs no
+    finer instance has (the second column of a wrapped sentence) and the
+    contained instances are the redundant ones.
 
     >>> _non_maximum_suppression(
     ...     np.array([[0., 0., 10., 10.], [1., 1., 10., 10.]]),
@@ -124,7 +180,15 @@ def _non_maximum_suppression(
     ...     np.array([[1., 1., 19., 11.], [1., 1., 9., 11.]]),
     ...     np.array([0, 0]), np.array([0.9, 0.8]),
     ...     masks=np.stack([union, column]))
-    [1]
+    [0]
+    >>> left = np.zeros((12, 20), dtype=bool); left[1:11, 1:9] = True
+    >>> right = np.zeros((12, 20), dtype=bool); right[1:11, 11:19] = True
+    >>> both = left | right
+    >>> _non_maximum_suppression(
+    ...     np.array([[1., 1., 19., 11.], [1., 1., 9., 11.], [11., 1., 19., 11.]]),
+    ...     np.array([0, 0, 0]), np.array([0.9, 0.8, 0.8]),
+    ...     masks=np.stack([both, left, right]))
+    [1, 2]
     """
     order = np.argsort(-confidence, kind='stable')
     kept: List[int] = []
@@ -135,28 +199,40 @@ def _non_maximum_suppression(
             for other in kept
         ):
             continue
-        if masks is not None:
-            # A surviving candidate may itself be the coarser duplicate of an
-            # already-kept finer instance; evict the coarse one so only the
-            # finer instance of those glyphs remains.
-            suppressed = False
-            for other in list(kept):
-                if class_id[other] != class_id[index]:
-                    continue
-                duplicate = _containment_duplicate(index, other, xyxy, masks)
-                if duplicate is None:
-                    continue
-                if duplicate[1] == other:
-                    kept.remove(other)
-                else:
-                    # The candidate is the coarser duplicate of a kept finer
-                    # instance.
-                    suppressed = True
-                    break
-            if not suppressed:
-                kept.append(int(index))
-            continue
         kept.append(int(index))
+    if masks is None:
+        return kept
+    # Containment resolution runs after the IoU pass, over the kept set, and
+    # decides by coverage of ALL contained finer instances — greedy eviction
+    # would drop a coarse instance whose unique glyphs (the second column of
+    # a wrapped sentence) only a future candidate covers, silently deleting
+    # text. A coarse instance is a merged duplicate only when the finer
+    # instances contained in it already cover ~all its ink; otherwise the
+    # coarse instance carries unique text and the contained instances (each
+    # >=90% covered by it, per _containment_duplicate) are the redundant ones.
+    changed = True
+    while changed:
+        changed = False
+        for coarse in sorted(kept, key=lambda index: -_box_area(xyxy[index])):
+            fines = [
+                fine for fine in kept
+                if fine != coarse
+                and class_id[fine] == class_id[coarse]
+                and _containment_duplicate(fine, coarse, xyxy, masks) == (fine, coarse)
+            ]
+            if not fines:
+                continue
+            covered = np.zeros_like(masks[coarse], dtype=bool)
+            for fine in fines:
+                covered |= masks[fine].astype(bool)
+            coarse_pixels = int(masks[coarse].astype(bool).sum())
+            if coarse_pixels and int((covered & masks[coarse].astype(bool)).sum()) / coarse_pixels >= 0.9:
+                kept.remove(coarse)
+            else:
+                for fine in fines:
+                    kept.remove(fine)
+            changed = True
+            break
     return kept
 
 def _infer_vertical(mask: np.ndarray) -> Optional[bool]:
@@ -197,7 +273,86 @@ def _infer_vertical(mask: np.ndarray) -> Optional[bool]:
     strongest = max(column_energy, row_energy)
     if abs(column_energy - row_energy) <= strongest * 0.02:
         return None
-    return column_energy > row_energy
+    result = column_energy > row_energy
+    # Energy alone misreads dense multi-column runs: a run of three vertical
+    # columns nearly touching has a per-row profile as
+    # sharp as the per-column one, and the run reads horizontal. Bands along
+    # the stacking axis disambiguate: vertical columns are taller than the
+    # gaps between them are wide, and vice versa for horizontal lines, so the
+    # larger mean band aspect (extent along the flow / band width) wins.
+    band_aspect_vertical = _band_aspect(mask, vertical=True)
+    band_aspect_horizontal = _band_aspect(mask, vertical=False)
+    # One axis with two or more bands is the line-stacking signal: vertical
+    # columns appear as x-bands, horizontal lines as y-bands. An x-band aspect
+    # (height/width) above 1.2 means tall columns; a y-band aspect
+    # (width/height) above 2.0 means wide lines — vertical glyph runs are
+    # near-square (column width over glyph height <= 2), horizontal lines are
+    # not. Square-ish bands on both axes (rotated SFX) carry no signal.
+    signals = []
+    if band_aspect_vertical is not None and band_aspect_vertical > 1.2:
+        signals.append((band_aspect_vertical, True))
+    if band_aspect_horizontal is not None and band_aspect_horizontal > 2.0:
+        signals.append((band_aspect_horizontal, False))
+    if len(signals) == 1:
+        return signals[0][1]
+    if len(signals) == 2:
+        # A 2-D grid of text fires both; the more elongated axis wins.
+        return max(signals)[1]
+    return result
+
+def _band_aspect(mask: np.ndarray, vertical: bool) -> Optional[float]:
+    """Median flow-extent / width ratio of the ink bands along one axis.
+
+    Vertical text stacks columns along x; each band between empty columns is
+    one text column whose height over its width is the aspect. Returns None
+    when fewer than two bands exist (single blobs carry no stacking signal).
+
+    >>> column = np.zeros((10, 12), dtype=bool)
+    >>> column[1:9, 2:5] = True
+    >>> column[1:9, 7:10] = True
+    >>> round(_band_aspect(column, vertical=True), 1)
+    2.7
+    """
+    ink = mask > 0
+    profile = ink.sum(axis=0 if vertical else 1)
+    bands: List[Tuple[int, int]] = []
+    start: Optional[int] = None
+    for index, value in enumerate(profile):
+        if value > 0 and start is None:
+            start = index
+        elif value == 0 and start is not None:
+            bands.append((start, index))
+            start = None
+    if start is not None:
+        bands.append((start, len(profile)))
+    bands = [band for band in bands if band[1] - band[0] >= 3]
+    if len(bands) < 2:
+        return None
+    # Fragments (furigana rows, stray punctuation) have extreme aspect
+    # ratios that would outweigh real columns or lines; ignore bands much
+    # narrower than the dominant one.
+    widest = max(band[1] - band[0] for band in bands)
+    bands = [band for band in bands if band[1] - band[0] >= widest * 0.25]
+    if len(bands) < 2:
+        return None
+    aspects: List[float] = []
+    for band_start, band_end in bands:
+        window = ink[:, band_start:band_end] if vertical else ink[band_start:band_end, :]
+        if not window.any():
+            continue
+        # Extent of actual ink along the flow axis, not the raw window
+        # height: bbox slack must not dilute the elongation signal.
+        if vertical:
+            inked = np.where(window.any(axis=1))[0]
+            aspects.append((inked[-1] - inked[0] + 1) / window.shape[1])
+        else:
+            inked = np.where(window.any(axis=0))[0]
+            aspects.append((inked[-1] - inked[0] + 1) / window.shape[0])
+    if not aspects:
+        return None
+    # Median, not mean: tiny glyph runs (punctuation, small kana) would drag
+    # the mean up and read a vertical column as horizontal lines.
+    return float(np.median(aspects))
 
 
 def _estimate_font_size(text_mask: np.ndarray, vertical: bool, fallback: int) -> int:
@@ -222,8 +377,14 @@ def _estimate_font_size(text_mask: np.ndarray, vertical: bool, fallback: int) ->
     >>> mask[10:30, 5:25] = True
     >>> mask[10:30, 55:75] = True
     >>> _estimate_font_size(mask, True, 95)
-    20
+    24
     """
+    def snap8(size: int) -> int:
+        # Glyph sizes of identical source text must come out identical even
+        # when mask bleed/noise shifts band widths a few pixels, or the same
+        # Japanese line would render at different translated sizes. Snap to a
+        # coarse 8px grid (font-size ladder in manga raster resolutions).
+        return (size + 4) // 8 * 8
     ink = text_mask > 0
     if ink.any():
         profile = ink.sum(axis=0 if vertical else 1)
@@ -243,6 +404,8 @@ def _estimate_font_size(text_mask: np.ndarray, vertical: bool, fallback: int) ->
             if band_width < 3:
                 continue
             window = ink[:, band_start:band_end] if vertical else ink[band_start:band_end, :]
+            # Runs along the reading-flow axis: vertical text reads down a
+            # column (y), horizontal text reads across a line (x).
             inner = window.sum(axis=1 if vertical else 0) > 0
             runs: List[int] = []
             run = 0
@@ -255,19 +418,114 @@ def _estimate_font_size(text_mask: np.ndarray, vertical: bool, fallback: int) ->
             if run:
                 runs.append(run)
             kept = [length for length in runs if length >= 4]
-            # p75 keeps full glyphs and drops sliver fragments; the 0.8 rule
-            # only trusts it over the band when the band is clearly fat.
-            inner_size = (
-                float(np.percentile(kept, 75)) if kept else float(band_width)
+            # A band narrower than its own glyph runs only holds sliver
+            # fragments (a broken two-column run split into one-glyph
+            # halves); skip it. Solid masks (SFX void-fill, or text painted
+            # over a dark panel whose mask merged with the background) have
+            # no per-glyph gap structure: nearly every flow row/column is
+            # inked, and the first run spans almost the whole band. Both
+            # states carry no font-size signal, so they fall through to the
+            # next band or the fallback.
+            if not kept:
+                continue
+            # Genuine slivers: every glyph is much shorter than the column
+            # band (a two-column run split into one-glyph halves).
+            if max(kept) < band_width * 0.5:
+                continue
+            # Floods: a single run spanning most of the flow extent is a
+            # mask merged with its background; no glyph structure there.
+            if len(kept) == 1 and max(kept) > 0.8 * max(window.shape):
+                continue
+            inner_size = min(
+                float(np.percentile(kept, 75)), float(band_width),
             )
-            refined.append(
-                inner_size if inner_size < 0.8 * band_width else float(band_width)
-            )
+            refined.append(inner_size)
         if refined:
-            estimate = int(round(float(np.median(refined))))
+            estimate = int(round(float(np.percentile(refined, 75))))
             if estimate >= 3:
-                return min(estimate, fallback)
-    return fallback
+                return snap8(min(estimate, fallback))
+    return snap8(fallback)
+
+def _columns_can_merge(first: TextBlock, second: TextBlock) -> bool:
+    """Whether two free vertical text columns share one sentence.
+
+    Same-size columns (ratio <= 1.6) whose boxes sit within 0.6 glyph of each
+    other and overlap vertically are one sentence wrapped across columns;
+    anything else (separate columns can sit hundreds of pixels apart) stays
+    independent.
+
+    >>> free = TextBlock(xyxy=[0, 0, 10, 100], src_is_vertical=True)
+    >>> free._detected_font_size = 24
+    >>> near = TextBlock(xyxy=[18, 2, 28, 98], src_is_vertical=True)
+    >>> near._detected_font_size = 24
+    >>> _columns_can_merge(free, near)
+    True
+    >>> far = TextBlock(xyxy=[200, 2, 210, 98], src_is_vertical=True)
+    >>> far._detected_font_size = 24
+    >>> _columns_can_merge(free, far)
+    False
+    """
+    sizes = (first.detected_font_size, second.detected_font_size)
+    if min(sizes) <= 0 or max(sizes) / min(sizes) > 1.6:
+        return False
+    gap = max(first.xyxy[0], second.xyxy[0]) - min(first.xyxy[2], second.xyxy[2])
+    if gap < 0:
+        # Overlapping boxes are not side-by-side columns; the x-gap must be
+        # positive for two columns of one wrapped sentence.
+        return False
+    if gap > 0.6 * max(sizes):
+        return False
+    overlap = min(first.xyxy[3], second.xyxy[3]) - max(first.xyxy[1], second.xyxy[1])
+    if overlap < 0.5 * min(first.xyxy[3] - first.xyxy[1], second.xyxy[3] - second.xyxy[1]):
+        return False
+    return True
+
+
+def _merge_free_vertical_columns(
+    blocks: List[TextBlock], width: int, height: int, page_mask: np.ndarray,
+) -> List[TextBlock]:
+    """Merge adjacent free vertical text columns of one sentence into one block.
+
+    Koharu emits one instance per text column; a sentence wrapped across two
+    columns arrives as two blocks and the OCR
+    then translates the halves separately. Bubble-free same-writing columns
+    that _columns_can_merge accepts merge so the OCR reads the whole run, and
+    the font size re-estimates from the combined mask. Bubble-sharing runs
+    merge in _merge_balloon_blocks instead.
+
+    >>> free = TextBlock(xyxy=[0, 0, 10, 10], src_is_vertical=True)
+    >>> _merge_free_vertical_columns(
+    ...     [free], 100, 100, np.zeros((10, 10), np.uint8))[0] is free
+    True
+    """
+    out: List[TextBlock] = []
+    for block in blocks:
+        if block.bubble_polygon is not None or not block.src_is_vertical:
+            out.append(block)
+            continue
+        target = None
+        for existing in out:
+            if existing.bubble_polygon is not None or not existing.src_is_vertical:
+                continue
+            if _columns_can_merge(existing, block):
+                target = existing
+                break
+        if target is None:
+            out.append(block)
+            continue
+        # _merge_block_group mutates its first member in place, so the merged
+        # block replaces the target already stored in out.
+        combined = _merge_block_group([target, block], width, height, None)
+        # The merged columns share one glyph size; the union mask estimates it
+        # better than the minimum of the per-column bands.
+        left, top, right, bottom = (int(value) for value in combined.xyxy)
+        window = page_mask[top:bottom, left:right] > 0
+        fallback = min(right - left, bottom - top)
+        combined.font_size = combined._detected_font_size = _estimate_font_size(
+            window, True, fallback,
+        )
+    return out
+
 
 def _merge_balloon_blocks(
     blocks: List[TextBlock], width: int, height: int,
@@ -516,17 +774,28 @@ class KoharuDetector(TextDetectorBase):
             if not 0.0 <= threshold <= 1.0:
                 raise ValueError(f'{param_key} must be between 0 and 1.')
             thresholds[class_id] = threshold
+        # Class 1 stays in the postprocess thresholds even when sound
+        # effects are disabled: its candidates are still needed below to
+        # resolve regions the model fired on as both text and SFX.
         dilation = float(self.get_param_value('mask dilate size'))
         if not 0 <= dilation <= 100 or not dilation.is_integer():
             raise ValueError('mask dilate size must be an integer between 0 and 100.')
-        if not self.get_param_value('detect sound effects'):
-            thresholds.pop(1)
+        detect_sfx = bool(self.get_param_value('detect sound effects'))
 
-        self.model.model.postprocess.thresholds = thresholds.copy()
+        # Bubble candidates down to half the lowest other-class threshold
+        # stay visible: merged and dim bubbles score low, and their outlines
+        # are still recovered for text blocks the kept bubbles cannot link.
+        post_thresholds = thresholds.copy()
+        post_thresholds[2] = min(thresholds.values()) * 0.5
+        self.model.model.postprocess.thresholds = post_thresholds
         detections = self.model.predict(
-            img, threshold=min(thresholds.values()), shape=(1152, 1152),
+            img, threshold=min(post_thresholds.values()), shape=(1152, 1152),
             include_source_image=False,
         )
+        # The hint pass below needs the raw sub-threshold bubble candidates:
+        # the NMS containment resolution keeps a large bled coarse mask over
+        # the tight hexagons it contains.
+        raw_detections = detections
         if len(detections.xyxy) > 1:
             kept = _non_maximum_suppression(
                 detections.xyxy, detections.class_id, detections.confidence,
@@ -537,6 +806,7 @@ class KoharuDetector(TextDetectorBase):
         height, width = img.shape[:2]
         mask = np.zeros((height, width), dtype=np.uint8)
         blocks = []
+        text_entries: List[Tuple[TextBlock, int]] = []
         bubbles = []
         source_gray = None
         for index, (class_id, score) in enumerate(zip(detections.class_id, detections.confidence)):
@@ -551,13 +821,33 @@ class KoharuDetector(TextDetectorBase):
             if polygon is not None:
                 bubbles.append((int(detections.mask[index].sum()), polygon, index))
         bubbles.sort(key=lambda bubble: bubble[0])
+        bubble_threshold = thresholds[2]
         thresholds.pop(2)
         auto_vertical = bool(self.get_param_value('auto detect text orientation'))
         default_vertical = bool(self.get_param_value('source text is vertical'))
+        text_candidates = [
+            (detections.xyxy[i], float(detections.confidence[i]))
+            for i in range(len(detections.xyxy))
+            if detections.class_id[i] == 0
+            and np.isfinite(detections.confidence[i])
+            and detections.confidence[i] >= thresholds[0]
+        ]
+        sfx_candidates = [
+            (detections.xyxy[i], float(detections.confidence[i]))
+            for i in range(len(detections.xyxy))
+            if detections.class_id[i] == 1
+            and np.isfinite(detections.confidence[i])
+            and detections.confidence[i] >= thresholds[1]
+        ]
         for index, (box, class_id, score) in enumerate(zip(
             detections.xyxy, detections.class_id, detections.confidence,
         )):
             if class_id not in thresholds or not np.isfinite(score) or score < thresholds[class_id]:
+                continue
+            if _cross_class_loses(
+                int(class_id), box, float(score),
+                text_candidates, sfx_candidates, detect_sfx,
+            ):
                 continue
             if not np.isfinite(box).all():
                 # One malformed RF-DETR query must not lose every other
@@ -613,7 +903,76 @@ class KoharuDetector(TextDetectorBase):
                 text_mask[top:bottom, left:right], vertical, fallback,
             )
             block.font_size = block._detected_font_size = detected_size
+            if class_id == 0:
+                text_entries.append((block, index))
             blocks.append(block)
+
+        blocks = _merge_free_vertical_columns(
+            blocks, img.shape[1], img.shape[0], mask,
+        )
+        # The merge mutates its first member in place; entries of absorbed
+        # columns are dead and must not claim hint outlines.
+        live_ids = {id(block) for block in blocks}
+        text_entries = [
+            (block, text_index) for block, text_index in text_entries
+            if id(block) in live_ids
+        ]
+
+        # Merged and dim bubbles often score below 'bubble threshold' while
+        # their text columns detect at full confidence. Text that linked to
+        # no kept bubble falls back to the smallest sub-threshold bubble
+        # candidate containing >=90% of its mask — one hexagon of a joined
+        # bubble beats no outline. This runs after the free-column merge so
+        # a sentence's columns merge before any of them gains an outline
+        # (the merge skips blocks that already carry one). Candidates much
+        # larger than their text are region blobs, not bubble outlines, and
+        # stay ignored however confident the text is.
+        if text_entries and detections.mask is not None:
+            if source_gray is None:
+                source_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            hint_floor = min(thresholds.values()) * 0.5
+            hints = sorted(
+                (
+                    (int(raw_detections.mask[i].astype(bool).sum()), i)
+                    for i in range(len(raw_detections.xyxy))
+                    if raw_detections.class_id[i] == 2
+                    and hint_floor <= float(raw_detections.confidence[i]) < bubble_threshold
+                    and raw_detections.mask[i].shape == (height, width)
+                ),
+                key=lambda hint: hint[0],
+            )
+            hint_boxes = {
+                i: float(
+                    max(raw_detections.xyxy[i][2] - raw_detections.xyxy[i][0], 0.0)
+                    * max(raw_detections.xyxy[i][3] - raw_detections.xyxy[i][1], 0.0)
+                )
+                for _, i in hints
+            }
+            for _, hint_index in hints:
+                hint_mask = raw_detections.mask[hint_index].astype(bool)
+                if not hint_mask.any():
+                    continue
+                contained = []
+                for block, text_index in text_entries:
+                    if block.bubble_polygon is not None:
+                        continue
+                    text_mask = detections.mask[text_index].astype(bool)
+                    text_pixels = int(text_mask.sum())
+                    if not text_pixels:
+                        continue
+                    box = block.xyxy
+                    text_box_area = float(max(box[2] - box[0], 0.0) * max(box[3] - box[1], 0.0))
+                    if hint_boxes[hint_index] > 4.0 * text_box_area:
+                        continue
+                    if int((text_mask & hint_mask).sum()) / text_pixels >= 0.9:
+                        contained.append(block)
+                if not contained:
+                    continue
+                polygon = bubble_polygon_from_mask(raw_detections.mask[hint_index], source_gray)
+                if polygon is None:
+                    continue
+                for block in contained:
+                    block.bubble_polygon = polygon
 
         blocks = _merge_balloon_blocks(blocks, img.shape[1], img.shape[0])
 

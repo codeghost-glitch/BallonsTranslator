@@ -51,10 +51,19 @@ def bubble_polygon_from_mask(
     >>> bubble_polygon_from_mask(np.zeros((8, 8), dtype=np.uint8)) is None
     True
     """
-    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Segmentation borders carry pixel stair-steps and 1-2px spurs; a small
+    # close-then-open removes them without eroding real geometry (necks,
+    # tails), unlike a Gaussian which rounds corners.
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    cleaned = cv2.morphologyEx(
+        cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel),
+        cv2.MORPH_OPEN, kernel,
+    )
+    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
     contour = max(contours, key=cv2.contourArea)
+    snapped = False
     if source_gray is not None:
         if source_gray.shape != mask.shape or source_gray.ndim != 2:
             raise ValueError('Bubble source image must match the mask dimensions.')
@@ -66,6 +75,7 @@ def bubble_polygon_from_mask(
         roi = source_gray[top:bottom, left:right]
         predicted = np.zeros(roi.shape, dtype=np.uint8)
         cv2.drawContours(predicted, [contour - [left, top]], -1, 1, cv2.FILLED)
+        snapped = False
         _, labels, stats, _ = cv2.connectedComponentsWithStats(
             (roi >= 200).astype(np.uint8), connectivity=8,
         )
@@ -88,6 +98,65 @@ def bubble_polygon_from_mask(
                 union = np.count_nonzero(enclosed | predicted)
                 if union and intersection / union >= 0.85:
                     contour = border + [left, top]
+                    snapped = True
+                else:
+                    # Recovery for dashed/touching bubbles: the interior white
+                    # leaks to the page through border gaps (failing the
+                    # enclosure test) and weak segmentations cut inside the
+                    # true border (failing the IoU test). Opening the
+                    # component breaks narrow leak necks; the opened interior
+                    # is adopted when it contains the segmentation while
+                    # staying close to its size — a junk region around stray
+                    # text is far larger and still rejected.
+                    neck_kernel = cv2.getStructuringElement(
+                        cv2.MORPH_ELLIPSE,
+                        (max(9, min(31, min(roi.shape) // 8)),) * 2,
+                    )
+                    opened = cv2.morphologyEx(
+                        (labels == label).astype(np.uint8), cv2.MORPH_OPEN, neck_kernel,
+                    )
+                    if opened.any():
+                        onum, olabels, ostats, _ = cv2.connectedComponentsWithStats(
+                            opened, connectivity=8,
+                        )
+                        ooverlap = np.bincount(olabels[predicted != 0], minlength=onum)
+                        ooverlap[0] = 0
+                        olabel = int(ooverlap.argmax())
+                        if ooverlap[olabel]:
+                            ocx, ocy, ocw, och, _ = ostats[olabel]
+                            if (ocx > 0 and ocy > 0 and ocx + ocw < roi.shape[1]
+                                    and ocy + och < roi.shape[0]):
+                                oborders, _ = cv2.findContours(
+                                    (olabels == olabel).astype(np.uint8),
+                                    cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+                                )
+                                oborder = max(oborders, key=cv2.contourArea)
+                                ofill = np.zeros(roi.shape, dtype=np.uint8)
+                                cv2.drawContours(ofill, [oborder], -1, 1, cv2.FILLED)
+                                inside = np.count_nonzero(ofill & predicted)
+                                if (predicted.any()
+                                        and inside / max(1, int(predicted.sum())) >= 0.9
+                                        and int(ofill.sum()) <= 1.6 * max(1, int(predicted.sum()))):
+                                    contour = oborder + [left, top]
+                                    snapped = True
+    # The upsampled segmentation boundary carries several-pixel waviness; a
+    # light circular low-pass along the contour removes it while large-scale
+    # features (necks, tails) survive for splitting and inset geometry.
+    points = contour.reshape(-1, 2).astype(np.float64)
+    if len(points) > 17 and not snapped:
+        # A contour roll-average pulls straight edges inward — a balloon
+        # flush against the panel border loses its border edge (page 007
+        # teardrop: 121 -> 133). Snapped outlines come from a clean binary
+        # interior and stay un-smoothed; approxPolyDP below still strips the
+        # 1-2px staircase without moving legitimate straight or diagonal
+        # edges.
+        smooth_kernel = cv2.getGaussianKernel(17, 4.0).ravel()
+        smooth_kernel /= smooth_kernel.sum()
+        xs = np.stack([np.roll(points[:, 0], shift) for shift in range(-8, 9)])
+        ys = np.stack([np.roll(points[:, 1], shift) for shift in range(-8, 9)])
+        contour = np.round(np.stack(
+            [smooth_kernel @ xs, smooth_kernel @ ys], axis=1,
+        )).astype(np.int32).reshape(-1, 1, 2)
     # Keep the outline as detailed as the stored format allows: smoothing
     # starts small and only coarsens when a huge mask would exceed the point
     # cap, so shallow necks and tail roots survive for splitting and inset
