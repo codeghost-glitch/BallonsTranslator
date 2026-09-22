@@ -471,39 +471,6 @@ class TextEffectEditSession:
         values = self._current_states() if states is None else tuple(states)
         self._matched_occurrences = matched_effect_occurrences(values)
 
-    def preview_states(self, states: Sequence[TextEffectStack]) -> bool:
-        """Preview complete selected-item states for the item boundary API."""
-        if not self.items:
-            return False
-        targets = self._validate_states(states)
-        if self.preview_before is None:
-            self.preview_before = self._current_states()
-            self.preview_key = ('complete-stack',)
-        return self._apply_preview_states(targets)
-
-    def commit_states(
-        self, states: Optional[Sequence[TextEffectStack]] = None
-    ) -> bool:
-        if not self.items and not hasattr(self.host, 'global_format'):
-            self.preview_before = None
-            self.preview_key = None
-            return False
-        before = (
-            self._current_states()
-            if self.preview_before is None
-            else self.preview_before
-        )
-        if states is None:
-            after = (
-                tuple(item.effective_text_effects() for item in self.items)
-                if self.items else self._current_states()
-            )
-        else:
-            after = self._validate_states(states)
-        self.preview_before = None
-        self.preview_key = None
-        return self._commit_complete_states(before, after)
-
     def _begin_preview(self, key: tuple) -> Tuple[TextEffectStack, ...]:
         if self.preview_before is not None and self.preview_key != key:
             self.cancel_preview()

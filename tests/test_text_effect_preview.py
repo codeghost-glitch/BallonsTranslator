@@ -575,7 +575,7 @@ class TextEffectPreviewTest(unittest.TestCase):
 
     def test_one_session_commit_is_one_canvas_undo_without_document_history(self):
         before = self._stack()
-        after = self._stack(0.28, (90, 100, 110), opacity=0.7)
+        after = self._stack(0.28)
         items = [self._item(False, before), self._item(True, before)]
         document_steps = tuple(
             item.document().availableUndoSteps() for item in items
@@ -589,7 +589,10 @@ class TextEffectPreviewTest(unittest.TestCase):
             session.replace_targets(items)
             for item in items:
                 item.effect_renderer.set_faster_preview(True)
-            self.assertTrue(session.preview_states((after, after)))
+            session.preview_value(0, 'width', 0.28)
+            self.assertTrue(all(
+                item.effect_renderer.has_preview() for item in items
+            ))
             scratches = tuple(
                 item.effect_renderer._preview_effect_raster_state
                 for item in items
@@ -603,7 +606,7 @@ class TextEffectPreviewTest(unittest.TestCase):
                 'clear_text_effect_preview',
                 wraps=items[0].clear_text_effect_preview,
             ) as explicit_clear:
-                self.assertTrue(session.commit_states())
+                self.assertTrue(session.commit_value(0, 'width', 0.28))
             explicit_clear.assert_not_called()
             self.assertEqual(canvas.stack.count(), 1)
             self.assertTrue(all(
@@ -637,22 +640,21 @@ class TextEffectPreviewTest(unittest.TestCase):
 
     def test_page_and_scene_lifecycle_release_effect_targets(self):
         item = self._item(stack=self._stack())
-        target = self._stack(0.2)
         session = TextEffectEditSession(SimpleNamespace())
         session.replace_targets([item])
-        session.preview_states((target,))
+        session.preview_value(0, 'width', 0.2)
         session.resolve_for_save()
         self.assertEqual(session.items, [item])
         self.assertIsNone(session.preview_before)
 
-        session.preview_states((target,))
+        session.preview_value(0, 'width', 0.2)
         session.resolve_for_page_change()
         self.assertEqual(session.items, [])
         self.assertIsNone(session.preview_before)
         self.assertFalse(item.effect_renderer.has_preview())
 
         session.replace_targets([item])
-        session.preview_states((target,))
+        session.preview_value(0, 'width', 0.2)
         item_ref = weakref.ref(item)
         session.cancel_for_scene_change()
         self.assertEqual(session.items, [])
@@ -661,7 +663,7 @@ class TextEffectPreviewTest(unittest.TestCase):
 
     def test_undo_refresh_keeps_active_owner_copy_in_sync(self):
         before = self._stack()
-        after = self._stack(0.27, (110, 120, 130))
+        after = self._stack(0.27)
         item = self._item(stack=before)
         active_copy = item.blk.fontformat.deepcopy()
         host = SimpleNamespace(
@@ -676,8 +678,8 @@ class TextEffectPreviewTest(unittest.TestCase):
         C.active_format = active_copy
         try:
             session.replace_targets([item])
-            session.preview_states((after,))
-            session.commit_states()
+            session.preview_value(0, 'width', 0.27)
+            session.commit_value(0, 'width', 0.27)
             self.assertEqual(active_copy.text_effects, after)
 
             # Selection teardown merges the local owner copy back to the item.
