@@ -235,7 +235,3 @@ class SizeComboBox(QComboBox):
         if isinstance(multiplier, Callable):
             multiplier = multiplier()
         self.setValue(self.value() + delta * multiplier)
-
-
-class SmallSizeComboBox(SizeComboBox):
-    pass

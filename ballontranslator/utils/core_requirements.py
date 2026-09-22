@@ -17,7 +17,6 @@ CORE_IMPORT_PROBES = (
     ('pillow_jxl', ()),
     ('requests', ()),
     ('tqdm', ()),
-    ('natsort', ()),
     ('cv2', ('IMREAD_COLOR', 'IMREAD_GRAYSCALE', 'cvtColor')),
 )
 

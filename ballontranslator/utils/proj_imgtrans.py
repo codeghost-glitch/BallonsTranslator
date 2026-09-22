@@ -153,7 +153,6 @@ class ProjImgTrans:
         self._image_info = {}
         self._llm_compact_memory: Optional[Dict] = None
 
-        self._fuzzy_inpainted_list = None
 
         self.not_found_pages: Dict[str, List[TextBlock]] = {}
         self.new_pages: List[str] = []
@@ -1082,15 +1081,6 @@ class ProjImgTrans:
         else:
             p = fileprefix+pcfg.intermediate_imgsave_ext
 
-        if not osp.exists(p) and shared.FUZZY_MATCH_IMAGE_NAME:
-            if self._fuzzy_inpainted_list is None:
-                if osp.exists(self.inpainted_dir()):
-                    self._fuzzy_inpainted_list = find_all_imgs(self.inpainted_dir(), sort=True)
-                else:
-                    self._fuzzy_inpainted_list = []
-            pidx = self.pagename2idx(imgname)
-            if pidx < len(self._fuzzy_inpainted_list):
-                return osp.join(self.inpainted_dir(), self._fuzzy_inpainted_list[pidx])
         return p
     
     def load_inpainted_by_imgname(self, imgname: str, scale_to_src: bool = True) -> np.ndarray:
@@ -1118,9 +1108,6 @@ class ProjImgTrans:
                 ext = pcfg.imgsave_ext
         return osp.join(self.result_dir(), osp.splitext(imgname)[0]+ext)
         
-    def backup(self):
-        raise NotImplementedError
-
     @property
     def is_empty(self):
         return len(self.pages) == 0

@@ -2,7 +2,7 @@ from .ocr import OCR, OCRBase
 from .textdetector import TEXTDETECTORS, TextDetectorBase
 from .translators import TRANSLATORS, BaseTranslator
 from .inpaint import INPAINTERS, InpainterBase
-from .base import DEFAULT_DEVICE, GPUINTENSIVE_SET, LOGGER, merge_config_module_params, \
+from .base import merge_config_module_params, \
     init_module_registries
 
 GET_VALID_TEXTDETECTORS = lambda : list(TEXTDETECTORS.module_dict.keys())

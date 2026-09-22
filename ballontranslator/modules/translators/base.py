@@ -1,5 +1,4 @@
 import urllib.request
-from ordered_set import OrderedSet
 from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence, Set, Union
 import time, requests, re, uuid, base64, hmac, functools, json, copy
 

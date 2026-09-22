@@ -46,11 +46,6 @@ def apply_rotary_pos_emb(x, sin, cos, scale=1):
     # einsum notation for lambda t: repeat(t[offset:x.shape[1]+offset,:], "n d -> () n () (d j)", j=2)
     return (x * cos) + (rotate_every_two(x) * sin)
 
-def apply_rotary_pos_emb2d(x, sin, cos, scale=1):
-    breakpoint()
-    sin, cos = map(lambda t: duplicate_interleave(t * scale), (sin, cos))
-    # einsum notation for lambda t: repeat(t[offset:x.shape[1]+offset,:], "n d -> () n () (d j)", j=2)
-    return (x * cos) + (rotate_every_two(x) * sin)
 
 class XPOS(nn.Module):
     def __init__(
@@ -80,29 +75,6 @@ class XPOS(nn.Module):
 
         x = apply_rotary_pos_emb(x, sin, cos, scale)
         return x
-
-
-class XPOS2D(nn.Module):
-    def __init__(
-        self, head_dim, scale_base=512
-    ):
-        super().__init__()
-        self.xpos = XPOS(head_dim // 2, scale_base)
-
-    def forward(self, x: torch.Tensor, offset_x = 0, offset_y = 0, downscale=False):
-        """
-            x: N, H, W, C
-        """
-        N, H, W, C = x.shape
-        C = C // 2
-        [dir_x, dir_y] = x.chunk(2, dim = 3)
-        dir_x = einops.rearrange(dir_x, 'N H W C -> (N H) W C', N = N, H = H, W = W, C = C)
-        dir_y = einops.rearrange(dir_y, 'N H W C -> (N W) H C', N = N, H = H, W = W, C = C)
-        dir_x = self.xpos(dir_x, offset = offset_x, downscale = downscale)
-        dir_y = self.xpos(dir_y, offset = offset_y, downscale = downscale)
-        dir_x = einops.rearrange(dir_x, '(N H) W C -> N H W C', N = N, H = H, W = W, C = C)
-        dir_y = einops.rearrange(dir_y, '(N W) H C -> N H W C', N = N, H = H, W = W, C = C)
-        return torch.cat([dir_x, dir_y], dim = 3)
 
 
 # Roformer with Xpos
@@ -440,109 +412,6 @@ def generate_square_subsequent_mask(sz):
     mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
     return mask
 
-class Beam:
-    def __init__(self, char_seq = [], logprobs = []):
-        # L
-        if isinstance(char_seq, list):
-            self.chars = torch.tensor(char_seq, dtype=torch.long)
-            self.logprobs = torch.tensor(logprobs, dtype=torch.float32)
-        else:
-            self.chars = char_seq.clone()
-            self.logprobs = logprobs.clone()
-
-    def avg_logprob(self):
-        return self.logprobs.mean().item()
-
-    def sort_key(self):
-        return -self.avg_logprob()
-
-    def seq_end(self, end_tok):
-        return self.chars.view(-1)[-1] == end_tok
-
-    def extend(self, idx, logprob):
-        return Beam(
-            torch.cat([self.chars, idx.unsqueeze(0)], dim = -1),
-            torch.cat([self.logprobs, logprob.unsqueeze(0)], dim = -1),
-        )
-
-DECODE_BLOCK_LENGTH = 8
-
-class Hypothesis:
-    def __init__(self, device, start_tok: int, end_tok: int, padding_tok: int, memory_idx: int, num_layers: int, embd_dim: int):
-        self.device = device
-        self.start_tok = start_tok
-        self.end_tok = end_tok
-        self.padding_tok = padding_tok
-        self.memory_idx = memory_idx
-        self.embd_size = embd_dim
-        self.num_layers = num_layers
-        # 1, L, E
-        self.cached_activations = [torch.zeros(1, 0, self.embd_size).to(self.device)] * (num_layers + 1)
-        self.out_idx = torch.LongTensor([start_tok]).to(self.device)
-        self.out_logprobs = torch.FloatTensor([0]).to(self.device)
-        self.length = 0
-
-    def seq_end(self):
-        return self.out_idx.view(-1)[-1] == self.end_tok
-
-    def logprob(self):
-        return self.out_logprobs.mean().item()
-
-    def sort_key(self):
-        return -self.logprob()
-
-    def prob(self):
-        return self.out_logprobs.mean().exp().item()
-
-    def __len__(self):
-        return self.length
-
-    def extend(self, idx, logprob):
-        ret = Hypothesis(self.device, self.start_tok, self.end_tok, self.padding_tok, self.memory_idx, self.num_layers, self.embd_size)
-        ret.cached_activations = [item.clone() for item in self.cached_activations]
-        ret.length = self.length + 1
-        ret.out_idx = torch.cat([self.out_idx, torch.LongTensor([idx]).to(self.device)], dim = 0)
-        ret.out_logprobs = torch.cat([self.out_logprobs, torch.FloatTensor([logprob]).to(self.device)], dim = 0)
-        return ret
-
-    def output(self):
-        return self.cached_activations[-1]
-
-def next_token_batch(
-    hyps: List[Hypothesis],
-    memory: torch.Tensor, # N, H, W, C
-    memory_mask: torch.BoolTensor,
-    decoders: nn.ModuleList,
-    embd: nn.Embedding
-    ):
-    layer: nn.TransformerDecoderLayer
-    N = len(hyps)
-    offset = len(hyps[0])
-
-    # N
-    last_toks = torch.stack([item.out_idx[-1] for item in hyps])
-    # N, 1, E
-    tgt: torch.FloatTensor = embd(last_toks).unsqueeze_(1)
-    
-    # N, L, E
-    memory = torch.stack([memory[idx, :, :] for idx in [item.memory_idx for item in hyps]], dim = 0)
-    for l, layer in enumerate(decoders):
-        # TODO: keys and values are recomputed everytime
-        # N, L - 1, E
-        combined_activations = torch.cat([item.cached_activations[l] for item in hyps], dim = 0)
-        # N, L, E
-        combined_activations = torch.cat([combined_activations, tgt], dim = 1)
-        for i in range(N):
-            hyps[i].cached_activations[l] = combined_activations[i: i + 1, :, :]
-        # N, 1, E
-        tgt = tgt + layer.self_attn(layer.norm1(tgt), layer.norm1(combined_activations), layer.norm1(combined_activations), q_offset = offset)[0]
-        tgt = tgt + layer.multihead_attn(layer.norm2(tgt), memory, memory, key_padding_mask = memory_mask, q_offset = offset)[0]
-        tgt = tgt + layer._ff_block(layer.norm3(tgt))
-    #print(tgt[0, 0, 0])
-    for i in range(N):
-        hyps[i].cached_activations[len(decoders)] = torch.cat([hyps[i].cached_activations[len(decoders)], tgt[i: i + 1, :, :]], dim = 1)
-    # N, E
-    return tgt.squeeze_(1)
 
 class OCR(nn.Module):
     def __init__(self, dictionary, max_len):
@@ -606,84 +475,6 @@ class OCR(nn.Module):
             self.color_pred_bg(color_feats), \
             self.color_pred_fg_ind(color_feats), \
             self.color_pred_bg_ind(color_feats)
-
-    def infer_beam_batch(self, img: torch.FloatTensor, img_widths: List[int], beams_k: int = 5, start_tok = 1, end_tok = 2, pad_tok = 0, max_finished_hypos: int = 2, max_seq_length = 384):
-        N, C, H, W = img.shape
-        assert H == 48 and C == 3
-        memory = self.backbone(img)
-        memory = einops.rearrange(memory, 'N C 1 W -> N W C')
-        valid_feats_length = [(x + 3) // 4 + 2 for x in img_widths]
-        input_mask = torch.zeros(N, memory.size(1), dtype = torch.bool).to(img.device)
-        for i, l in enumerate(valid_feats_length):
-            input_mask[i, l:] = True
-        for layer in self.encoders :
-            memory = layer(layer, src = memory, src_key_padding_mask = input_mask)
-        hypos = [Hypothesis(img.device, start_tok, end_tok, pad_tok, i, len(self.decoders), 320) for i in range(N)]
-        # N, E
-        decoded = next_token_batch(hypos, memory, input_mask, self.decoders, self.embd)
-        # N, n_chars
-        pred_char_logprob = self.pred(self.pred1(decoded)).log_softmax(-1)
-        # N, k
-        pred_chars_values, pred_chars_index = torch.topk(pred_char_logprob, beams_k, dim = 1)
-        new_hypos: List[Hypothesis] = []
-        finished_hypos = defaultdict(list)
-        for i in range(N):
-            for k in range(beams_k):
-                new_hypos.append(hypos[i].extend(pred_chars_index[i, k], pred_chars_values[i, k]))
-        hypos = new_hypos
-        for ixx in range(max_seq_length):
-            # N * k, E
-            decoded = next_token_batch(hypos, memory, torch.stack([input_mask[hyp.memory_idx] for hyp in hypos]) , self.decoders, self.embd)
-            # N * k, n_chars
-            pred_char_logprob = self.pred(self.pred1(decoded)).log_softmax(-1)
-            # N * k, k
-            pred_chars_values, pred_chars_index = torch.topk(pred_char_logprob, beams_k, dim = 1)
-            hypos_per_sample = defaultdict(list)
-            h: Hypothesis
-            for i, h in enumerate(hypos):
-                for k in range(beams_k):
-                    hypos_per_sample[h.memory_idx].append(h.extend(pred_chars_index[i, k], pred_chars_values[i, k]))
-            hypos = []
-            # hypos_per_sample now contains N * k^2 hypos
-            for i in hypos_per_sample.keys():
-                cur_hypos: List[Hypothesis] = hypos_per_sample[i]
-                cur_hypos = sorted(cur_hypos, key = lambda a: a.sort_key())[: beams_k + 1]
-                #print(cur_hypos[0].out_idx[-1])
-                to_added_hypos = []
-                sample_done = False
-                for h in cur_hypos:
-                    if h.seq_end():
-                        finished_hypos[i].append(h)
-                        if len(finished_hypos[i]) >= max_finished_hypos:
-                            sample_done = True
-                            break
-                    else:
-                        if len(to_added_hypos) < beams_k:
-                            to_added_hypos.append(h)
-                if not sample_done:
-                    hypos.extend(to_added_hypos)
-            if len(hypos) == 0:
-                break
-        # add remaining hypos to finished
-        for i in range(N):
-            if i not in finished_hypos:
-                cur_hypos: List[Hypothesis] = hypos_per_sample[i]
-                cur_hypo = sorted(cur_hypos, key = lambda a: a.sort_key())[0]
-                finished_hypos[i].append(cur_hypo)
-        assert len(finished_hypos) == N
-        result = []
-        for i in range(N):
-            cur_hypos = finished_hypos[i]
-            cur_hypo = sorted(cur_hypos, key = lambda a: a.sort_key())[0]
-            decoded = cur_hypo.output()
-            color_feats = self.color_pred1(decoded)
-            fg_pred, bg_pred, fg_ind_pred, bg_ind_pred = \
-                self.color_pred_fg(color_feats), \
-                self.color_pred_bg(color_feats), \
-                self.color_pred_fg_ind(color_feats), \
-                self.color_pred_bg_ind(color_feats)
-            result.append((cur_hypo.out_idx[1:], cur_hypo.prob(), fg_pred[0], bg_pred[0], fg_ind_pred[0], bg_ind_pred[0]))
-        return result
 
     def infer_beam_batch_tensor(self, img: torch.FloatTensor, img_widths: List[int], beams_k: int = 5, start_tok = 1, end_tok = 2, pad_tok = 0, max_finished_hypos: int = 2, max_seq_length = 384):
         N, C, H, W = img.shape
@@ -866,55 +657,3 @@ class OCR(nn.Module):
         return tgt.squeeze_(1), cached_activations
 
 import numpy as np
-
-def convert_pl_model(filename: str) :
-    sd = torch.load(filename, map_location = 'cpu')['state_dict']
-    sd2 = {}
-    for k, v in sd.items() :
-        k: str
-        k = k.removeprefix('model.')
-        sd2[k] = v
-    return sd2
-
-def test_LocalViT_FeatureExtractor() :
-    net = ConvNext_FeatureExtractor(48, 3, 320)
-    inp = torch.randn(2, 3, 48, 512)
-    out = net(inp)
-    print(out.shape)
-
-def test_infer() :
-    with open('alphabet-all-v7.txt', 'r') as fp :
-        dictionary = [s[:-1] for s in fp.readlines()]
-    model = OCR(dictionary, 32)
-    model.eval()
-    sd = convert_pl_model('epoch=0-step=13000.ckpt')
-    model.load_state_dict(sd)
-    model_parameters = filter(lambda p: p.requires_grad, model.parameters())
-    params = sum([np.prod(p.size()) for p in model_parameters])
-    print(params)
-
-    img = cv2.cvtColor(cv2.imread('test3.png'), cv2.COLOR_BGR2RGB)
-    ratio = img.shape[1] / float(img.shape[0])
-    new_w = int(round(ratio * 48))
-    #print(img.shape)
-    img = cv2.resize(img, (new_w, 48), interpolation=cv2.INTER_AREA)
-
-    img_torch = einops.rearrange((torch.from_numpy(img) / 127.5 - 1.0), 'h w c -> 1 c h w')
-
-    with torch.no_grad() :
-        idx, prob, fg_pred, bg_pred, fg_ind_pred, bg_ind_pred = model.infer_beam_batch_tensor(img_torch, [new_w], 5, max_seq_length = 32)[0]
-        txt = ''
-        for i in idx :
-            txt += dictionary[i]
-        print(txt, prob)
-        for chid, fg, bg, fg_ind, bg_ind in zip(idx, fg_pred[0], bg_pred[0], fg_ind_pred[0], bg_ind_pred[0]) :
-            has_fg = (fg_ind[1] > fg_ind[0]).item()
-            has_bg = (bg_ind[1] > bg_ind[0]).item()
-            if has_fg :
-                fg = np.clip((fg * 255).numpy(), 0, 255)
-            if has_bg :
-                bg = np.clip((bg * 255).numpy(), 0, 255)
-            print(f'{dictionary[chid]} {fg if has_fg else "None"} {bg if has_bg else "None"}')
-
-if __name__ == "__main__":
-    test_infer()

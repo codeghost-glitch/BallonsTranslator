@@ -1,5 +1,4 @@
 from qtpy.QtWidgets import (
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -215,10 +214,6 @@ class PanelArea(QScrollArea):
             )
         finally:
             self._syncing_content_height = False
-
-
-class PanelGroupBox(QGroupBox):
-    pass
 
 
 class PanelAreaContent(Widget):

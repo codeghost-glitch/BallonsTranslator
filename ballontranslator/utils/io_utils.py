@@ -1,21 +1,26 @@
-import json, os, sys, time, io
+import json, os, sys, time
 import os.path as osp
 from pathlib import Path
 from typing import List, Union
-import base64
-import traceback
+import re
 import unicodedata
 
 from .logger import logger as LOGGER
-import requests
 from PIL import Image
 import PIL
 import cv2
 import numpy as np
 import pillow_jxl
-from natsort import natsorted
 
 IMG_EXT = ['.bmp', '.jpg', '.png', '.jpeg', '.webp', '.jxl']
+
+def _natural_sort_key(path: str) -> list:
+    # Numeric-aware order so page_2 sorts before page_10; type tags keep
+    # digit and non-digit chunks mutually comparable.
+    return [
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in re.split(r'(\d+)', str(path))
+    ]
 
 NP_INT_TYPES = (np.int_, np.int8, np.int16, np.int32, np.int64, np.uint, np.uint8, np.uint16, np.uint32, np.uint64)
 if int(np.version.full_version.split('.')[0]) == 1:
@@ -24,9 +29,6 @@ if int(np.version.full_version.split('.')[0]) == 1:
 else:
     NP_BOOL_TYPES = (np.bool_, np.bool)
     NP_FLOAT_TYPES = (np.float16, np.float32, np.float64)
-
-def to_dict(obj):
-    return json.loads(json.dumps(obj, default=lambda o: o.__dict__, ensure_ascii=False))
 
 def serialize_np(obj):
     if isinstance(obj, np.ndarray):
@@ -72,7 +74,7 @@ def find_all_imgs(img_dir, abs_path=False, sort=False):
             imglist.append(filename)
 
     if sort:
-        imglist = natsorted(imglist)
+        imglist.sort(key=_natural_sort_key)
         
     return imglist
 
@@ -132,7 +134,7 @@ def find_tif_files(img_dir, abs_path=False, sort=False):
                 imglist.append(filename)
 
     if sort:
-        imglist = natsorted(imglist)
+        imglist.sort(key=_natural_sort_key)
         
     return imglist
 
@@ -238,11 +240,6 @@ def imwrite(img_path, img, ext='.png', quality=100, jxl_encode_effort=3):
         cv2.imencode(ext, img, encode_param)[1].tofile(img_path)
 
 
-def show_img_by_dict(imgdicts):
-    for keyname in imgdicts.keys():
-        cv2.imshow(keyname, imgdicts[keyname])
-    cv2.waitKey(0)
-
 def text_is_empty(text) -> bool:
     if isinstance(text, str):
         if text.strip() == '':
@@ -280,44 +277,3 @@ def text_has_content(text) -> bool:
     
 def empty_func(*args, **kwargs):
     return
-
-def _b64encode(x: bytes) -> str:
-    return base64.b64encode(x).decode("utf-8")
-
-def img2b64(img):
-    """
-    Convert a PIL image to a base64-encoded string.
-    """
-    if isinstance(img, np.ndarray):
-        img = Image.fromarray(img)
-    buffered = io.BytesIO()
-    img.save(buffered, format='PNG')
-    return _b64encode(buffered.getvalue())
-
-def save_encoded_image(b64_image: str, output_path: str):
-    with open(output_path, "wb") as image_file:
-        image_file.write(base64.b64decode(b64_image))
-
-def submit_request(url, data, exist_on_exception=True, auth=None, wait_time = 5):
-    response = None
-    try:
-        while True:
-            try:
-                response = requests.post(url, data=data, auth=auth)
-                response.raise_for_status()
-                break
-            except Exception as e:
-                if wait_time > 0:
-                    print(traceback.format_exc(), file=sys.stderr)
-                    print(f'sleep {wait_time} sec...')
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    raise e
-    except Exception as e:
-        print(traceback.format_exc(), file=sys.stderr)
-        if response is not None:
-            print('response content: ' + response.text)
-        if exist_on_exception:
-            exit()
-    return response

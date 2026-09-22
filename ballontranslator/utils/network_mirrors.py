@@ -2,7 +2,7 @@ import json
 import locale
 import os
 import time
-from typing import Iterable, Optional, Set
+from typing import Iterable, Optional
 from urllib.request import getproxies
 
 
@@ -117,28 +117,6 @@ def read_saved_pypi_mirror(config_path: str) -> Optional[str]:
     return normalize_mirror_value(mirrors.get('pypi'))
 
 
-def missing_mirror_fields(config_path: str) -> Set[str]:
-    """Return mirror fields that were absent from a persisted config.
-
-    Explicit JSON ``null`` values are present fields and should not be
-    overwritten by automatic defaults.
-
-    >>> sorted(_missing_mirror_fields_from_data({}))
-    ['huggingface', 'pypi']
-    >>> _missing_mirror_fields_from_data({'mirrors': {'pypi': None}})
-    {'huggingface'}
-    """
-
-    data = _read_raw_config(config_path)
-    if not isinstance(data, dict):
-        return set(MIRROR_FIELDS)
-    return _missing_mirror_fields_from_data(data)
-
-
-def _missing_mirror_fields_from_data(data: dict) -> Set[str]:
-    mirrors = data.get('mirrors')
-    if not isinstance(mirrors, dict):
-        return set(MIRROR_FIELDS)
     return {field for field in MIRROR_FIELDS if field not in mirrors}
 
 
@@ -191,28 +169,6 @@ def collect_system_timezone_names() -> list:
     candidates.append(_localtime_zoneinfo_name())
     return _unique_nonempty(candidates)
 
-
-def backfill_missing_mirror_defaults(
-    mirrors_config,
-    missing_fields: Iterable[str],
-    locale_names: Iterable[str] = (),
-    timezone_names: Iterable[str] = (),
-) -> list:
-    """Set mirror defaults for missing fields when local hints say China.
-
-    >>> class Mirrors:
-    ...     huggingface = None
-    ...     pypi = None
-    >>> mirrors = Mirrors()
-    >>> backfill_missing_mirror_defaults(mirrors, {'pypi'}, locale_names=['zh_CN'])
-    ['pypi']
-    >>> mirrors.pypi
-    'https://mirrors.aliyun.com/pypi/simple'
-    """
-
-    missing_fields = set(missing_fields)
-    if not missing_fields or not should_use_china_mirrors(locale_names, timezone_names):
-        return []
 
     updated = []
     if 'huggingface' in missing_fields and getattr(mirrors_config, 'huggingface', None) is None:

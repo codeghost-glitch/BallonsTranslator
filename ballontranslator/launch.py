@@ -370,7 +370,6 @@ def main():
     app_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias | QFont.StyleStrategy.NoSubpixelAntialias)
     QGuiApplication.setFont(app_font)
     shared.DEFAULT_FONT_FAMILY = app_font.family()
-    shared.APP_DEFAULT_FONT = app_font.family()
     
     if args.ldpi:
         shared.LDPI = args.ldpi

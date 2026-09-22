@@ -29,8 +29,6 @@ ICON_DIR = osp.join(RESOURCE_DIR, 'icons')
 ICON_PATH = osp.join(ICON_DIR, 'icon.icns')
 LOGGING_PATH = osp.join(PROGRAM_PATH, 'logs')
 
-LIBS_PATH = osp.join(PROGRAM_PATH, 'data/libs')
-
 STYLESHEET_PATH = osp.join(RESOURCE_DIR, 'stylesheet.css')
 THEME_PATH = osp.join(RESOURCE_DIR, 'themes.json')
 CONFIG_PATH = osp.join(PROGRAM_PATH, 'config/config.json')
@@ -74,13 +72,11 @@ LEFTBAR_WIDTH = 48
 LEFTBTN_WIDTH = 28
 
 LDPI = 96.
-DPI = 188.75
 
 SCREEN_H = 2160
 SCREEN_W = 3840
 
 DEFAULT_FONT_FAMILY = 'Microsoft YaHei UI'
-APP_DEFAULT_FONT = 'Microsoft YaHei UI'
 
 WINDOW_BORDER_WIDTH = 4
 BOTTOMBAR_HEIGHT = 32
@@ -95,8 +91,6 @@ SLIDERHANDLE_COLOR = (85,85,96)
 FOREGROUND_FONTCOLOR = (93,93,95)
 BORDER_COLOR = (179,182,191)
 WIDGET_BACKGROUND_COLOR = (235,238,245)
-
-MAX_NUM_LOG = 7
 
 TRANSLATE_DIR = osp.join(RESOURCE_DIR, 'translate')
 DISPLAY_LANGUAGE_MAP = {
@@ -146,8 +140,6 @@ DEBUG = False
 args = None
 TORCH_INSTALL_PREFERRED_DEVICE = None
 TORCH_INSTALL_PREFERRED_PROFILE = None
-
-FUZZY_MATCH_IMAGE_NAME = False
 
 cache_data: Dict = None
 cache_dir: str = osp.join(PROGRAM_PATH, '.btrans_cache')

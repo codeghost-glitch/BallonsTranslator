@@ -1,7 +1,6 @@
 from typing import Tuple, List, ClassVar, Union, Any, Dict, Set
 from dataclasses import dataclass, field, is_dataclass
 import copy
-import os
 import inspect
 
 import numpy as np
@@ -89,7 +88,3 @@ class Config:
 
     def copy(self):
         return copy.deepcopy(self)
-    
-
-MODULE_PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-BASE_PATH = os.path.dirname(MODULE_PATH)

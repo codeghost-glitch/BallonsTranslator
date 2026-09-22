@@ -1363,9 +1363,6 @@ class HorizontalTextDocumentLayout(SceneTextLayout):
                     )
             block = block.next()
 
-        if self.foreground_pixmap is not None:
-            painter.drawPixmap(0, 0, self.foreground_pixmap)
-
         if not self.defer_cursor_paint:
             cursor_rect = self.source_cursor_rect(context.cursorPosition)
             if cursor_rect is not None and not cursor_rect.isEmpty():

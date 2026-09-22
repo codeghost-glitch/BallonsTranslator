@@ -41,7 +41,6 @@ except ImportError:
 from ballontranslator.ui import shared_widget as SW
 from ballontranslator.ui.custom_widget import (
     ColorPickerLabel,
-    NestedColorPickerLabel,
 )
 from ballontranslator.ui.misc import parse_stylesheet
 from ballontranslator.ui.text_engine.formatting.commands import (
@@ -4202,7 +4201,6 @@ class TextEffectPanelTest(unittest.TestCase):
             hasattr(self.panel.textadvancedfmt_panel, 'shadow_group')
         )
         self.assertIsInstance(self.panel.colorPicker, ColorPickerLabel)
-        self.assertNotIsInstance(self.panel.colorPicker, NestedColorPickerLabel)
         self.assertNotIn('opacity', handle_ffmt_change)
         self.assertNotIn('srgb', handle_ffmt_change)
         self.assertNotIn('stroke_width', handle_ffmt_change)

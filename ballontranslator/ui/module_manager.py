@@ -45,7 +45,6 @@ from .configpanel import ConfigPanel
 from ballontranslator.utils.proj_imgtrans import ProjImgTrans
 from ballontranslator.utils.config import pcfg, RunStatus, save_config
 from ballontranslator.utils.llm_profiles import LLM_INPAINT_KEY, LLM_OCR_KEY
-from ballontranslator.utils.global_callbacks import register_global_callback
 cfg_module = pcfg.module
 
 # RUN can report the same missing LLM key from multiple page workers.
@@ -741,7 +740,6 @@ class ImgtransThread(QThread):
         self.stop_event = threading.Event()
         self._pipeline_stop_emitted = False
         self.pages_to_process = None
-        register_global_callback('user_request_stop', self.isStopRequested)
 
     def on_module_thread_stopped(self):
         self._emit_pipeline_stopped_if_ready(imgtrans_running=self.isRunning())

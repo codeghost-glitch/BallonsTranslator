@@ -358,25 +358,6 @@ class PyPackageManager:
                 return str(Requirement(original_requirement))
         return None
 
-    def build_install_command(
-        self,
-        requirements: Iterable[str],
-        torch_device: Optional[str] = None,
-        torch_cuda_version: Optional[str] = None,
-    ) -> List[str]:
-        """Build an install command for this manager's backend.
-
-        >>> manager = PyPackageManager(backend='pip')
-        >>> manager.build_install_command(['einops']).count('einops')
-        1
-        """
-
-        return self.build_install_commands(
-            requirements,
-            torch_device=torch_device,
-            torch_cuda_version=torch_cuda_version,
-        )[0]
-
     def build_install_commands(
         self,
         requirements: Iterable[str],
@@ -470,9 +451,6 @@ class PyPackageManager:
             if not result.ok:
                 return result
         return final_result or InstallResult(True, [])
-
-    def resolve_backend(self) -> str:
-        return package_installer.resolve_backend(self.backend, env=self.env)
 
     def preview_command(
         self,

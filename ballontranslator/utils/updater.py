@@ -166,13 +166,6 @@ class BallonsTranslatorUpdater:
         self.cache_dir = Path(cache_dir or shared.cache_dir).resolve()
         self.progress_callback = progress_callback
 
-    def check_and_update(self) -> UpdateResult:
-        result = self.check_latest_release()
-        if result.status != 'available' or result.release_info is None:
-            return result
-
-        return self.apply_update(result.release_info, result.current_version)
-
     def check_latest_release(self) -> UpdateResult:
         """Check for a newer release without modifying local files.
 

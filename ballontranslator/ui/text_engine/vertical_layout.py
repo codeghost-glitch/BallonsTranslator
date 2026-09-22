@@ -1938,9 +1938,6 @@ class VerticalTextDocumentLayout(SceneTextLayout):
                 draw_ruby_placement(painter, ruby_annotation)
             block = block.next()
 
-        if self.foreground_pixmap is not None:
-            painter.drawPixmap(0, 0, self.foreground_pixmap)
-
         if not self.defer_cursor_paint:
             cursor_rect = QRectF()
             if cursor_block is not None:

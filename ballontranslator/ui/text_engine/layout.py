@@ -7,7 +7,6 @@ from qtpy.QtGui import (
     QAbstractTextDocumentLayout,
     QFont,
     QFontMetricsF,
-    QPixmap,
     QTextBlock,
     QTextCharFormat,
     QTextCursor,
@@ -225,7 +224,6 @@ class SceneTextLayout(QAbstractTextDocumentLayout):
         self._block_fragment_ends: List[List[int]] = []
         self._max_font_size = -1
 
-        self.foreground_pixmap: QPixmap = None
         self.relayout_on_changed = True
 
         # Effect padding is derived layout state, not rich-text content.

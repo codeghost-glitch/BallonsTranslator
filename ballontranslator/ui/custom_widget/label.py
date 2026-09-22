@@ -107,58 +107,7 @@ class ColorPickerLabel(QLabel):
         return (color.red(), color.green(), color.blue(), color.alpha())
     
 
-class SmallColorPickerLabel(ColorPickerLabel):
-    pass
 
-
-class NestedColorPickerLabel(ColorPickerLabel):
-    """An outline-color swatch containing a separately clickable fill swatch."""
-
-    INNER_LEFT_RATIO = 0.5
-
-    def __init__(
-        self,
-        parent=None,
-        param_name: str = '',
-        inner_param_name: str = '',
-        *args,
-        **kwargs,
-    ) -> None:
-        super().__init__(parent=parent, param_name=param_name, *args, **kwargs)
-        self.setObjectName('NestedStrokeColorPicker')
-        self.inner = ColorPickerLabel(self, param_name=inner_param_name)
-        self.inner.setObjectName('NestedFillColorPicker')
-        self.setProperty('innerHover', False)
-        self.inner.installEventFilter(self)
-
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is not self.inner:
-            return super().eventFilter(watched, event)
-        event_type = event.type()
-        if event_type == QEvent.Type.Enter:
-            self._set_inner_hover(True)
-        elif event_type == QEvent.Type.Leave:
-            self._set_inner_hover(False)
-        return super().eventFilter(watched, event)
-
-    def _set_inner_hover(self, hovering: bool) -> None:
-        if bool(self.property('innerHover')) == hovering:
-            return
-        self.setProperty('innerHover', hovering)
-        # Enter/Leave is a safe point to refresh this property-scoped rule.
-        self.style().unpolish(self)
-        self.style().polish(self)
-        self.update()
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        content = self.contentsRect()
-        hint = self.inner.sizeHint()
-        width = self.inner.minimumWidth() or hint.width()
-        height = self.inner.minimumHeight() or hint.height()
-        x = content.left() + round(
-            max(0, content.width() - width) * self.INNER_LEFT_RATIO
-        )
         y = content.top() + round(max(0, content.height() - height) / 2)
         self.inner.setGeometry(x, y, width, height)
         self.inner.raise_()

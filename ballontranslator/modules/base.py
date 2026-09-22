@@ -2,8 +2,6 @@ import gc
 import os
 from typing import Callable, Dict, List
 from copy import deepcopy
-import re
-import importlib
 import importlib.util
 import traceback
 from pathlib import Path
@@ -11,9 +9,6 @@ from pathlib import Path
 from ballontranslator.utils.logger import logger as LOGGER
 from ballontranslator.utils import shared
 from ballontranslator.utils.lock import aquire_model_loading_lock, release_model_loading_lock
-
-
-GPUINTENSIVE_SET = {'cuda', 'mps', 'xpu', 'privateuseone'}
 
 
 def patch_module_params(cfg_param, module_params, module_name: str = ''):
@@ -257,17 +252,6 @@ class BaseModule:
         if 'low vram mode' in self.params:
             return self.get_param_value('low vram mode')
         return False
-
-    def is_cpu_intensive(self)->bool:
-        if self.params is not None and 'device' in self.params:
-            return self.params['device']['value'] == 'cpu'
-        return False
-
-    def is_gpu_intensive(self) -> bool:
-        if self.params is not None and 'device' in self.params:
-            return self.params['device']['value'] in GPUINTENSIVE_SET
-        return False
-
     def is_computational_intensive(self) -> bool:
         if self.params is not None and 'device' in self.params:
             return True
@@ -515,35 +499,6 @@ MODULE_SCRIPTS = {
     },
 }
     
-def import_module_registries(target_modules=None):
-    # Eager import path kept for explicit compatibility/debug use only.
-    def _load_module(module_dir: str, module_package: str, module_pattern: str) -> None:
-        if not os.path.isdir(module_dir):
-            return
-        modules = os.listdir(module_dir)
-        pattern = re.compile(module_pattern)
-        for module_name in modules:
-            if pattern.match(module_name) is not None:
-                try:
-                    module = module_package + '.' + module_name.replace('.py', '')
-                    importlib.import_module(module)
-                except Exception as e:
-                    LOGGER.warning(f'Failed to import {module}: {e}')
-
-    if target_modules is None:
-        target_modules = MODULE_SCRIPTS
-    if isinstance(target_modules, str):
-        target_modules = [target_modules]
-
-    for k in target_modules:
-        _load_module(**MODULE_SCRIPTS[k])
-        _load_module(
-            str(CUSTOM_MODULE_ROOT),
-            'custom_modules',
-            MODULE_SCRIPTS[k]['module_pattern'],
-        )
-
-
 def init_module_registries(target_modules=None):
     # Startup registers lightweight specs; real module imports happen on selection.
     from .lazy_registry import init_lazy_module_registries
