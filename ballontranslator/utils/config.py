@@ -405,7 +405,6 @@ class ProgramConfig(Config):
     show_source_text: bool = True
     show_trans_text: bool = True
     ocr_sublist: List = field(default_factory=lambda: list())
-    restore_ocr_empty: bool = False
     pre_mt_sublist: List = field(default_factory=lambda: list())
     mt_sublist: List = field(default_factory=lambda: list())
     display_lang: str = field(default_factory=lambda: shared.DEFAULT_DISPLAY_LANG) # to always apply shared.DEFAULT_DISPLAY_LANG

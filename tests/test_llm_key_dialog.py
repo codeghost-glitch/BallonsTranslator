@@ -1,3 +1,5 @@
+import shutil
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -747,14 +749,11 @@ class LLMKeyDialogDedupTest(unittest.TestCase):
         thread.imgtrans_proj = project
         thread.process_idx_to_page_idx = {}
         old_stages = [pcfg.module.stage_enabled(index) for index in range(4)]
-        old_restore_empty = pcfg.restore_ocr_empty
         try:
-            pcfg.restore_ocr_empty = False
             for index in range(4):
                 pcfg.module.set_stage_enabled(index, index == 1)
             thread._imgtrans_pipeline()
         finally:
-            pcfg.restore_ocr_empty = old_restore_empty
             for index, enabled in enumerate(old_stages):
                 pcfg.module.set_stage_enabled(index, enabled)
 
@@ -762,7 +761,8 @@ class LLMKeyDialogDedupTest(unittest.TestCase):
         self.assertEqual(project.pages['page-1'], [second, first])
 
     def test_full_pipeline_preserves_legacy_ocr_call_signature(self):
-        block = TextBlock(xyxy=[0, 0, 4, 4])
+        # Text keeps the block past the post-OCR untranslatable-block filter.
+        block = TextBlock(xyxy=[0, 0, 4, 4], text=['legacy ocr'])
         project = ProjImgTrans()
         project.pages = {'page-1': [block]}
         project._image_info = {'page-1': {'finish_code': 0}}
@@ -780,19 +780,65 @@ class LLMKeyDialogDedupTest(unittest.TestCase):
         thread.imgtrans_proj = project
         thread.process_idx_to_page_idx = {}
         old_stages = [pcfg.module.stage_enabled(index) for index in range(4)]
-        old_restore_empty = pcfg.restore_ocr_empty
         try:
-            pcfg.restore_ocr_empty = False
             for index in range(4):
                 pcfg.module.set_stage_enabled(index, index == 1)
             thread._imgtrans_pipeline()
         finally:
-            pcfg.restore_ocr_empty = old_restore_empty
             for index, enabled in enumerate(old_stages):
                 pcfg.module.set_stage_enabled(index, enabled)
 
         self.assertTrue(ocr.called)
         self.assertEqual(project.pages['page-1'], [block])
+
+    def test_pipeline_drops_untranslatable_blocks_after_ocr(self):
+        class PunctuationOCR(OCRBase):
+            def _ocr_blk_list(self, _img, blk_list, *args, **kwargs):
+                texts = ('･･････', 'うるさい...', '')
+                for blk, text in zip(blk_list, texts):
+                    if text:
+                        blk.text = [text]
+                return blk_list
+
+        # xyxy-only blocks cannot answer bounding_rect(); real detector
+        # blocks always carry line polygons, so build them the same way.
+        dots = TextBlock(lines=[[[0, 0], [4, 0], [4, 4], [0, 4]]])
+        dialogue = TextBlock(lines=[[[4, 0], [8, 0], [8, 4], [4, 4]]])
+        empty = TextBlock(lines=[[[0, 4], [4, 4], [4, 8], [0, 8]]])
+        project = ProjImgTrans()
+        project.directory = tempfile.mkdtemp()
+        self.addCleanup(
+            shutil.rmtree, project.directory, ignore_errors=True,
+        )
+        project.pages = {'page-1': [dots, dialogue, empty]}
+        project._image_info = {'page-1': {'finish_code': 0}}
+        project.read_img = lambda _page: np.zeros(
+            (8, 8, 3),
+            dtype=np.uint8,
+        )
+        # Removal zeroes each dropped block's share of the page mask.
+        project.load_mask_by_imgname = lambda _page: np.ones(
+            (8, 8),
+            dtype=np.uint8,
+        )
+        thread = module_manager.ImgtransThread(
+            SimpleNamespace(textdetector=None),
+            FakeOCRThread(PunctuationOCR()),
+            FakeTranslateThread(None),
+            SimpleNamespace(inpainter=None),
+        )
+        thread.imgtrans_proj = project
+        thread.process_idx_to_page_idx = {}
+        old_stages = [pcfg.module.stage_enabled(index) for index in range(4)]
+        try:
+            for index in range(4):
+                pcfg.module.set_stage_enabled(index, index == 1)
+            thread._imgtrans_pipeline()
+        finally:
+            for index, state in enumerate(old_stages):
+                pcfg.module.set_stage_enabled(index, state)
+
+        self.assertEqual(project.pages['page-1'], [dialogue])
 
     def test_missing_llm_key_stops_ocr_block_pipeline(self):
         ocr = MissingKeyOCR()
