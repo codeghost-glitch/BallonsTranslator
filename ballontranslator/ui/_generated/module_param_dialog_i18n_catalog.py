@@ -451,6 +451,39 @@ MODULE_PARAM_CATALOG = {
     ('textdetector', 'ctd', 'mask dilate size', 'display_name'): {
         "source": 'mask dilate size', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'mask dilate size'),
     },
+    ('textdetector', 'koharu_layout', 'device', 'display_name'): {
+        "source": 'Device', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Device'),
+    },
+    ('textdetector', 'koharu_layout', 'font size max', 'display_name'): {
+        "source": 'Font Size Max', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Font Size Max'),
+    },
+    ('textdetector', 'koharu_layout', 'font size min', 'display_name'): {
+        "source": 'Font Size Min', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Font Size Min'),
+    },
+    ('textdetector', 'koharu_layout', 'font size multiplier', 'display_name'): {
+        "source": 'Font Size Multiplier', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Font Size Multiplier'),
+    },
+    ('textdetector', 'koharu_layout', 'label', 'display_name'): {
+        "source": 'Labels', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Labels'),
+    },
+    ('textdetector', 'koharu_layout', 'mask dilate size', 'display_name'): {
+        "source": 'Mask Dilate Size', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Mask Dilate Size'),
+    },
+    ('textdetector', 'koharu_layout', 'merge text lines', 'display_name'): {
+        "source": 'Merge Text Lines', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Merge Text Lines'),
+    },
+    ('textdetector', 'koharu_layout', 'onomatopoeia threshold', 'description'): {
+        "source": 'Confidence threshold for SFX (model card recommends 0.20; raise to 0.40 for precision).', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Confidence threshold for SFX (model card recommends 0.20; raise to 0.40 for precision).'),
+    },
+    ('textdetector', 'koharu_layout', 'onomatopoeia threshold', 'display_name'): {
+        "source": 'Onomatopoeia Threshold', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Onomatopoeia Threshold'),
+    },
+    ('textdetector', 'koharu_layout', 'text threshold', 'description'): {
+        "source": 'Confidence threshold for text (model card recommends 0.25).', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Confidence threshold for text (model card recommends 0.25).'),
+    },
+    ('textdetector', 'koharu_layout', 'text threshold', 'display_name'): {
+        "source": 'Text Threshold', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Text Threshold'),
+    },
     ('textdetector', 'stariver_ocr', '', 'description'): {
         "source": '星河云(团子翻译器) OCR 文字检测器', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', '星河云(团子翻译器) OCR 文字检测器'),
     },
