@@ -677,6 +677,13 @@ class ProjImgTrans:
                     p,
                 )
                 img_info.pop('llm_visual_summary', None)
+            outlines_record = img_info.get('bubble_outlines')
+            if outlines_record is not None and not self._valid_bubble_outlines(outlines_record):
+                LOGGER.warning(
+                    'Invalid bubble_outlines for page %s; ignoring it.',
+                    p,
+                )
+                img_info.pop('bubble_outlines', None)
             if 'finish_code' not in img_info:
                 page_blklist = self.pages[p]
                 has_empty_blk = len(page_blklist) == 0 or \
@@ -812,6 +819,70 @@ class ProjImgTrans:
         if page_key not in self._image_info:
             raise ImgnameNotInProjectException
         self._image_info[page_key].pop('llm_visual_summary', None)
+
+    @staticmethod
+    def _valid_bubble_outlines(record: object) -> bool:
+        """Validate optional per-page detector bubble outline polygons.
+
+        Unknown or malformed shapes are dropped at the load boundary so a
+        damaged record never prevents the rest of the project from loading.
+
+        >>> ProjImgTrans._valid_bubble_outlines([[[0, 0], [4, 0], [4, 4]]])
+        True
+        >>> ProjImgTrans._valid_bubble_outlines([[[0, 0]]])
+        False
+        >>> ProjImgTrans._valid_bubble_outlines('bad')
+        False
+        """
+        if not isinstance(record, list):
+            return False
+        for poly in record:
+            if not isinstance(poly, list) or len(poly) < 3:
+                return False
+            for pt in poly:
+                if not isinstance(pt, (list, tuple)) or len(pt) != 2:
+                    return False
+                if not all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in pt):
+                    return False
+        return True
+
+    def get_bubble_outlines(self, page_key: str) -> List:
+        """Return a detached copy of the page's bubble outlines, if valid.
+
+        >>> project = ProjImgTrans()
+        >>> project._image_info['001.png'] = {}
+        >>> project.set_bubble_outlines('001.png', [[[0, 0], [4, 0], [4, 4]]])
+        >>> project.get_bubble_outlines('001.png')
+        [[[0, 0], [4, 0], [4, 4]]]
+        >>> project.get_bubble_outlines('999.png')
+        []
+        """
+        info = self._image_info.get(str(page_key))
+        if not isinstance(info, dict):
+            return []
+        record = info.get('bubble_outlines')
+        if record is None:
+            return []
+        if not self._valid_bubble_outlines(record):
+            LOGGER.warning(
+                'Invalid bubble_outlines for page %s; ignoring it.',
+                page_key,
+            )
+            info.pop('bubble_outlines', None)
+            return []
+        return copy.deepcopy(record)
+
+    def set_bubble_outlines(self, page_key: str, outlines: List) -> None:
+        """Persist detector bubble outlines at the project boundary.
+
+        Empty input clears the page's outlines (e.g. label disabled on a
+        later detect run).
+        """
+        if page_key not in self._image_info:
+            raise ImgnameNotInProjectException
+        if not self._valid_bubble_outlines(outlines):
+            raise ValueError('Invalid bubble_outlines record.')
+        self._image_info[page_key]['bubble_outlines'] = copy.deepcopy(outlines)
 
     @staticmethod
     def _valid_llm_compact_memory(record: object) -> bool:

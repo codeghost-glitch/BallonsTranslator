@@ -451,6 +451,12 @@ MODULE_PARAM_CATALOG = {
     ('textdetector', 'ctd', 'mask dilate size', 'display_name'): {
         "source": 'mask dilate size', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'mask dilate size'),
     },
+    ('textdetector', 'koharu_layout', 'bubble threshold', 'description'): {
+        "source": 'Confidence threshold for bubble outlines drawn on the canvas (model card recommends 0.5).', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Confidence threshold for bubble outlines drawn on the canvas (model card recommends 0.5).'),
+    },
+    ('textdetector', 'koharu_layout', 'bubble threshold', 'display_name'): {
+        "source": 'Bubble Threshold', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Bubble Threshold'),
+    },
     ('textdetector', 'koharu_layout', 'device', 'display_name'): {
         "source": 'Device', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Device'),
     },

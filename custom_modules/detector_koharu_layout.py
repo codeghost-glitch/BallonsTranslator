@@ -5,7 +5,7 @@ Model: https://huggingface.co/mayocream/koharu-layout-rfdetr-seg-2xl-1152
 import logging
 import os
 import warnings
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -27,6 +27,33 @@ from ballontranslator.utils.textblock import (
 
 MODEL_PATH = 'data/models/koharu_layout/model.safetensors'
 CLASS_NAMES = ['text', 'onomatopoeia', 'bubble', 'panel']
+
+
+def _mask_outline(det_mask: np.ndarray) -> Optional[List]:
+    """Largest simplified outer contour of one instance mask, as int points.
+
+    Falls back to the caller's box when the mask is empty or too small to
+    form a polygon.
+
+    >>> import numpy as np
+    >>> _mask_outline(np.zeros((8, 8), np.uint8)) is None
+    True
+    >>> mask = np.zeros((64, 64), np.uint8)
+    >>> mask[10:50, 10:50] = 1
+    >>> poly = _mask_outline(mask)
+    >>> len(poly) >= 3 and all(len(pt) == 2 for pt in poly)
+    True
+    """
+    contours, _ = cv2.findContours(
+        det_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if len(contours) == 0:
+        return None
+    cnt = max(contours, key=cv2.contourArea)
+    approx = cv2.approxPolyDP(cnt, 2.0, True).reshape(-1, 2)
+    if len(approx) < 3:
+        return None
+    return approx.tolist()
 
 
 class _QuietRFDETRNoise(logging.Filter):
@@ -80,8 +107,12 @@ class KoharuLayoutDetector(TextDetectorBase):
             'type': 'line_editor', 'value': 0.20, 'display_name': 'Onomatopoeia Threshold',
             'description': 'Confidence threshold for SFX (model card recommends 0.20; raise to 0.40 for precision).',
         },
+        'bubble threshold': {
+            'type': 'line_editor', 'value': 0.5, 'display_name': 'Bubble Threshold',
+            'description': 'Confidence threshold for bubble outlines drawn on the canvas (model card recommends 0.5).',
+        },
         'label': {
-            'value': {'text': True, 'onomatopoeia': True},
+            'value': {'text': True, 'onomatopoeia': True, 'bubble': False},
             'type': 'check_group',
             'display_name': 'Labels',
         },
@@ -156,20 +187,32 @@ class KoharuLayoutDetector(TextDetectorBase):
         im_h, im_w = img.shape[:2]
         mask = np.zeros((im_h, im_w), dtype=np.uint8)
 
-        # Only text-bearing classes feed the mask/blocks; bubble and panel
-        # detections are dropped because no bubble association stage consumes them.
+        # Text-bearing classes feed the mask/blocks; bubble detections become
+        # canvas outlines only, and panel is unused.
+        valid_labels = self.get_valid_labels()
         class_thresholds = {
             cid: float(self.get_param_value(f'{name} threshold'))
             for cid, name in ((0, 'text'), (1, 'onomatopoeia'))
-            if name in self.get_valid_labels()
+            if name in valid_labels
         }
-        if not class_thresholds:
+        want_bubble = 'bubble' in valid_labels
+        bubble_threshold = float(self.get_param_value('bubble threshold'))
+        page = proj.current_img if proj is not None else None
+        bubble_outlines = []
+        if page is not None:
+            # Each detect run replaces the stored outlines, so disabling the
+            # label clears stale ones.
+            proj.set_bubble_outlines(page, [])
+        if not class_thresholds and not want_bubble:
             return mask, []
 
-        # Run at the lowest class threshold, then filter per class as the model
+        # Run at the lowest threshold, then filter per class as the model
         # card instructs; rfdetr 1.5.2 resizes to the constructor's resolution
         # (1152) and returns masks at source resolution.
-        dets = self.model.predict(img, threshold=min(class_thresholds.values()))
+        run_thresholds = dict(class_thresholds)
+        if want_bubble:
+            run_thresholds[2] = bubble_threshold
+        dets = self.model.predict(img, threshold=min(run_thresholds.values()))
         ksize = max(int(self.get_param_value('mask dilate size')), 0)
 
         detected_items = []
@@ -177,6 +220,22 @@ class KoharuLayoutDetector(TextDetectorBase):
             masks = dets.mask
             for i, (cls_id, conf) in enumerate(zip(dets.class_id, dets.confidence)):
                 cls_id = int(cls_id)
+                if cls_id == 2:
+                    if not want_bubble or conf < bubble_threshold:
+                        continue
+                    x1, y1, x2, y2 = dets.xyxy[i].astype(int)
+                    x1, y1 = max(x1, 0), max(y1, 0)
+                    x2, y2 = min(x2, im_w), min(y2, im_h)
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+                    det_mask = masks[i].astype(bool) if masks is not None else None
+                    outline = _mask_outline(det_mask) if det_mask is not None else None
+                    if outline is None:
+                        outline = xywh2xyxypoly(
+                            np.array([[x1, y1, x2 - x1, y2 - y1]])
+                        ).reshape(4, 2).tolist()
+                    bubble_outlines.append(outline)
+                    continue
                 if cls_id not in class_thresholds or conf < class_thresholds[cls_id]:
                     continue
                 x1, y1, x2, y2 = dets.xyxy[i].astype(int)
@@ -205,6 +264,9 @@ class KoharuLayoutDetector(TextDetectorBase):
                 x2, y2 = min(x2 + ksize, im_w), min(y2 + ksize, im_h)
                 pts = xywh2xyxypoly(np.array([[x1, y1, x2 - x1, y2 - y1]])).reshape(4, 2).tolist()
                 detected_items.append({'pts': pts, 'label': CLASS_NAMES[cls_id]})
+
+        if page is not None:
+            proj.set_bubble_outlines(page, bubble_outlines)
 
         blk_list = []
         if not detected_items:
