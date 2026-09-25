@@ -162,7 +162,9 @@ def run_lupdate(program_dir: Path, translate_path: Path) -> None:
         )
     if lupdate is None:
         raise SystemExit('No Python-capable Qt lupdate executable was found.')
-    command = [lupdate, '-verbose', *_ui_python_files(program_dir), '-ts', str(translate_path)]
+    # pylupdate6 (argparse CLI) rejects the Qt-style '-verbose' flag the other
+    # lupdate variants accept; verbosity is cosmetic, so pass none.
+    command = [lupdate, *_ui_python_files(program_dir), '-ts', str(translate_path)]
     subprocess.run(command, check=True)
 
 
