@@ -129,10 +129,13 @@ class KoharuLayoutDetector(TextDetectorBase):
             'type': 'line_editor', 'value': -1, 'display_name': 'Font Size Min',
         },
         'mask dilate size': {
-            # Glyph-shaped masks grow ~radially: ksize 2 merges dense text and
-            # drove measured precision down to 0.52 on dense pages; 1 keeps
-            # recall ~0.96 with precision ~0.89 (ink-based per-instance check).
-            'type': 'line_editor', 'value': 1, 'display_name': 'Mask Dilate Size',
+            # The seg head under-covers thin glyph rims (measured: ink up to
+            # 5 px outside the raw mask on real pages), and lama keeps gray
+            # stroke shadows unless the mask clears a stroke by ~4 px:
+            # blk1 page 1 residual ink after inpaint was 121/24/0 px at
+            # ksize 2/4/6. Smaller values inpaint but leave ghost glyphs;
+            # the cost is a wider inpainted band around text (~1.8x mask).
+            'type': 'line_editor', 'value': 6, 'display_name': 'Mask Dilate Size',
         },
         'device': {**DEVICE_SELECTOR(), 'display_name': 'Device'},
     }

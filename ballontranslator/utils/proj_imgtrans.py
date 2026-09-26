@@ -884,6 +884,56 @@ class ProjImgTrans:
             raise ValueError('Invalid bubble_outlines record.')
         self._image_info[page_key]['bubble_outlines'] = copy.deepcopy(outlines)
 
+    def prune_bubble_outlines(self, page_key: str) -> None:
+        """Drop outlines whose bubble encloses no surviving text line.
+
+        Called after OCR applies the punctuation-only exception: bubbles
+        holding only dots/ellipses (or no block at all) have nothing to
+        translate and are not outlined. Attribution uses line geometry,
+        not the block center: detection merges blocks across bubbles, so
+        one block's center can sit in a different bubble than its lines.
+
+        >>> from ballontranslator.utils.textblock import TextBlock
+        >>> project = ProjImgTrans()
+        >>> project._image_info['001.png'] = {}
+        >>> project.pages['001.png'] = [TextBlock(xyxy=[10, 10, 60, 60])]
+        >>> project.set_bubble_outlines('001.png',
+        ...     [[[0, 0], [100, 0], [100, 100], [0, 100]],
+        ...      [[200, 0], [300, 0], [300, 100], [200, 100]]])
+        >>> project.prune_bubble_outlines('001.png')
+        >>> project.get_bubble_outlines('001.png')
+        [[[0, 0], [100, 0], [100, 100], [0, 100]]]
+        """
+        outlines = self.get_bubble_outlines(page_key)
+        if not outlines:
+            return
+        groups: List[np.ndarray] = []
+        for blk in self.pages.get(page_key, []):
+            try:
+                lines = np.asarray(blk.lines, np.float32).reshape(-1, 8)
+            except (ValueError, TypeError):
+                lines = np.empty((0, 8), np.float32)
+            if lines.size:
+                quads = lines.reshape(-1, 4, 2)
+                # Quad corners plus centroid: a line counts for any bubble
+                # it touches.
+                groups.append(np.concatenate(
+                    [quads, quads.mean(axis=1, keepdims=True)], axis=1
+                ).reshape(-1, 2))
+            else:
+                groups.append(np.asarray(blk.center(), np.float32).reshape(1, 2))
+        points = np.concatenate(groups) if groups else np.empty((0, 2), np.float32)
+        kept = []
+        for poly in outlines:
+            arr = np.array(poly, np.float32)
+            if any(
+                cv2.pointPolygonTest(arr, (float(x), float(y)), False) >= 0
+                for x, y in points
+            ):
+                kept.append(poly)
+        if len(kept) != len(outlines):
+            self.set_bubble_outlines(page_key, kept)
+
     @staticmethod
     def _valid_llm_compact_memory(record: object) -> bool:
         """Validate only the stable structure of optional project memory.

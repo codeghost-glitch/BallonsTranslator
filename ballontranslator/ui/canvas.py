@@ -315,10 +315,12 @@ class Canvas(QGraphicsScene):
         self.drawingLayer.setTransformationMode(Qt.TransformationMode.FastTransformation)
         self.bubbleOutlineLayer = QGraphicsPathItem()
         # Cosmetic dashed accent line: constant screen width, visually distinct
-        # from the solid block-region guides.
-        outline_pen = QPen(TEXTRECT_SHOW_COLOR, 2.0, Qt.PenStyle.DashLine)
+        # from the solid block-region guides; the same accent tints the bubble
+        # interior through a low-alpha fill.
+        outline_pen = QPen(TEXTRECT_SHOW_COLOR, 4.0, Qt.PenStyle.DashLine)
         outline_pen.setCosmetic(True)
         self.bubbleOutlineLayer.setPen(outline_pen)
+        self.bubbleOutlineLayer.setBrush(QColor(30, 147, 229, 60))
         # Decorative only: never swallow mouse events meant for the layers below.
         self.bubbleOutlineLayer.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.textLayer = QGraphicsPixmapItem()

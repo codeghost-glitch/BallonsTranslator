@@ -53,3 +53,29 @@ def test_mask_stays_inside_block_boxes():
     det.updateParam('label', {'text': True, 'onomatopoeia': True, 'bubble': False})
     det.detect(_synthetic_page(), proj)
     assert proj.get_bubble_outlines('001.png') == []
+
+
+def test_mask_covers_detected_text_ink():
+    """Text ink the detector claims must be inside the inpaint mask.
+
+    The seg head under-covers glyph rims: ink left outside the mask passes
+    through lama untouched and resurfaces as ghost glyphs (page 1, blk1).
+    The shipped default dilation is what closes those gaps, so this runs on
+    default params.
+    """
+    det = TEXTDETECTORS.resolve_module('koharu_layout')()
+    det.updateParam('label', {'text': True, 'onomatopoeia': True, 'bubble': True})
+    proj = ProjImgTrans()
+    proj._image_info = {'001.png': {}}
+    proj.current_img = '001.png'
+    img = _synthetic_page()
+    mask, blks = det.detect(img, proj)
+    assert blks, 'detector found nothing on the synthetic page'
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    claimed = np.zeros(gray.shape, dtype=bool)
+    for i in range(6):  # the synthetic text lines, exact geometry
+        x = 180 + i * 22
+        claimed[214:386, max(x - 6, 0):x + 7] = True
+    missed = int(((gray < 160) & claimed & ~(mask > 0)).sum())
+    assert missed == 0, f'{missed} text ink px left outside the inpaint mask'

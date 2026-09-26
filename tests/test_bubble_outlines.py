@@ -60,6 +60,34 @@ class TestBubbleOutlinesProjectBoundary(unittest.TestCase):
         self.assertEqual(proj._image_info['001.png']['finish_code'], 3)
         self.assertEqual(proj.get_bubble_outlines('999.png'), [])
 
+    def test_prune_drops_bubbles_without_surviving_text(self):
+        from ballontranslator.utils.textblock import TextBlock
+        proj = self._proj()
+        inner = [[0, 0], [100, 0], [100, 100], [0, 100]]
+        empty = [[200, 0], [300, 0], [300, 100], [200, 100]]
+        proj.set_bubble_outlines('001.png', [inner, empty])
+        proj.pages['001.png'] = [TextBlock(xyxy=[10, 10, 60, 60])]
+        proj.prune_bubble_outlines('001.png')
+        self.assertEqual(proj.get_bubble_outlines('001.png'), [inner])
+
+        # Every block gone (punctuation-only exception) clears all outlines.
+        proj.pages['001.png'] = []
+        proj.prune_bubble_outlines('001.png')
+        self.assertEqual(proj.get_bubble_outlines('001.png'), [])
+
+        # Merged blocks span bubbles: attribution follows line geometry,
+        # not the block center (which sits in the other bubble here).
+        proj.set_bubble_outlines('001.png', [inner, empty])
+        proj.pages['001.png'] = [
+            TextBlock(xyxy=[0, 0, 300, 100],
+                      lines=[[210, 10, 290, 10, 290, 90, 210, 90]])
+        ]
+        proj.prune_bubble_outlines('001.png')
+        self.assertEqual(proj.get_bubble_outlines('001.png'), [empty])
+
+        # Unknown page is a no-op.
+        proj.prune_bubble_outlines('999.png')
+
 
 class TestCanvasOutlineLayer(unittest.TestCase):
 

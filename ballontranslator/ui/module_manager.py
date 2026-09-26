@@ -1163,6 +1163,12 @@ class ImgtransThread(QThread):
                             if need_save_mask:
                                 self.imgtrans_proj.save_mask(imgname, mask)
                                 need_save_mask = False
+
+                    # Outlines follow the same exception as the inpaint
+                    # mask: bubbles whose text all failed the
+                    # punctuation-only check (or that hold no block) are
+                    # not outlined.
+                    self.imgtrans_proj.prune_bubble_outlines(imgname)
                 except LLMUserActionRequiredError as e:
                     _show_llm_user_action_required_dialog(
                         e,
