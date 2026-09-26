@@ -69,3 +69,4 @@ data/dictionaries/
 custom_modules/*
 !custom_modules/put your custom modules here.txt
 !custom_modules/trans_custom_copy_source.py
+!custom_modules/ocr_hayai_nova.py
