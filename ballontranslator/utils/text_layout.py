@@ -39,7 +39,25 @@ class Line:
         self.pos_x += self.spacing
         self.spacing = 0
 
-def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_length, srcline_wlist, line_no: int, line_height, ref_src_lines: bool = False):
+def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_length, srcline_wlist, line_no: int, line_height, ref_src_lines: bool = False, ellipse=None):
+    """Whether a line may grow to ``new_len`` under the width budget.
+
+    >>> line = Line('word', 0, 0, 60)
+    >>> line_is_valid(line, 80, 0, 100, 80, None, 0, 20)
+    True
+    >>> line_is_valid(line, 80, 0, 100, 80, None, 0, 20, ellipse=(50, 0, 30, 40))
+    False
+    """
+    if ellipse is not None:
+        # Elliptical typesetting: the budget is the ellipse width at this
+        # line's row, so line lengths curve with the bubble outline.
+        _, ey, ea, eb = ellipse
+        d = abs(line.pos_y + line_height / 2 - ey)
+        if d >= eb:
+            ecap = 1.0
+        else:
+            ecap = 2 * ea * np.sqrt(1.0 - (d / eb) ** 2)
+        max_width = min(max_width, max(ecap, 1.0))
     if ref_src_lines:
         # if line_no >= 0 and line_no < len(srcline_wlist):
         #     _max_width = min(srcline_wlist[line_no], max_width)
@@ -75,7 +93,8 @@ def layout_lines_aligncenter(
     word_break: bool = False,
     ref_src_lines = False,
     srcline_wlist=None,
-    start_from_top=False
+    start_from_top=False,
+    ellipse=None
 )->List[Line]:
     
     lh_pad = 0
@@ -150,7 +169,7 @@ def layout_lines_aligncenter(
         else:
             new_len = central_line.length + len_right[0] + delimiter_len
 
-        line_valid = line_is_valid(central_line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, -1, line_height, ref_src_lines)
+        line_valid = line_is_valid(central_line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, -1, line_height, ref_src_lines, ellipse=ellipse)
         if ref_src_lines and not line_valid and len(srcline_wlist) == 1:
             if new_len < max_central_width:
                 line_valid = True
@@ -222,14 +241,14 @@ def layout_lines_aligncenter(
                 mask[pos_y: line_bottom - lh_pad, right_x].mean() < border_thr:
                 line_valid = False
                 if ref_src_lines and (len(wl_list) == 1 or line_right_no + 1 >= len(srcline_wlist)) and \
-                    line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines):
+                    line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines, ellipse=ellipse):
                     line_valid = True
             else:
                 line_valid = True
             if line_valid:
                 line.append_right(w, wl+delimiter_len, delimiter)
                 line.pos_x = new_x
-                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines)
+                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines, ellipse=ellipse)
                 if not line_valid:
                     if sum_right > 0:
                         w, wl = wlst_right.pop(0), len_right.pop(0)
@@ -269,14 +288,14 @@ def layout_lines_aligncenter(
                 mask[pos_y: line_bottom - lh_pad, right_x].mean() < border_thr:
                 line_valid = False
                 if ref_src_lines and line_left_no - 1 < 0 and \
-                    line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines):
+                    line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, ellipse=ellipse):
                     line_valid = True
             else:
                 line_valid = True
             if line_valid:
                 line.append_left(w, wl+delimiter_len, delimiter)
                 line.pos_x = new_x
-                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines)
+                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, ellipse=ellipse)
                 if not line_valid:
                     if sum_left > 0:
                         w, wl = wlst_left.pop(-1), len_left.pop(-1)
@@ -310,6 +329,7 @@ def layout_lines_alignside(
     max_width: int = np.inf,
     ref_src_lines = False,
     srcline_wlist=None,
+    ellipse=None,
 )->List[Line]:
 
     align_right = blk.fontformat.alignment == TextAlignment.Right
@@ -348,10 +368,10 @@ def layout_lines_alignside(
                 if mask[np.clip(pos_y, 0, bh - 1): np.clip(line_bottom - lh_pad, 0, bh), new_x].mean() > 240:
                     line_valid = True
                 else:
-                    if ref_src_lines and line_id + 1 >= len(srcline_wlist) and line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines):
+                    if ref_src_lines and line_id + 1 >= len(srcline_wlist) and line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines, ellipse=ellipse):
                         line_valid = True
             if line_valid:
-                line_valid = line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines)
+                line_valid = line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines, ellipse=ellipse)
             if line_valid:
                 line.append_right(w, wl+delimiter_len, delimiter)
             else:
@@ -378,7 +398,8 @@ def layout_text(
     max_central_width=np.inf,
     src_is_cjk=False,
     tgt_is_cjk=False,
-    ref_src_lines = False
+    ref_src_lines = False,
+    ellipse=None
 ) -> Tuple[str, List]:
 
     angle = blk.angle
@@ -446,10 +467,10 @@ def layout_text(
     if alignment == TextAlignment.Center:
         lines, adjust_xy = layout_lines_aligncenter(blk, mask, words, centroid, wl_list, delimiter_len, line_height, spacing, delimiter, 
                                          max_central_width, ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist,
-                                         start_from_top=start_from_top)    
+                                         start_from_top=start_from_top, ellipse=ellipse)
     else:
         lines, adjust_xy = layout_lines_alignside(blk, mask, words, centroid, wl_list, delimiter_len, line_height, spacing, delimiter, False, max_central_width, 
-                                       ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist)
+                                       ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist, ellipse=ellipse)
     
     concated_text = []
     pos_x_lst, pos_right_lst = [], []
@@ -480,3 +501,49 @@ def layout_text(
         abs_y = int(canvas_t + mask_xyxy[1])
 
     return concated_text, [abs_x, abs_y, canvas_w, canvas_h], start_from_top, adjust_xy
+
+
+def hyphenate_long_words(
+    words: List[str],
+    wl_list: List[int],
+    measure,
+    lang: str,
+    max_width: int,
+) -> Tuple[List[str], List[int]]:
+    """Split Latin-script tokens wider than the line budget at linguistic
+    hyphen points, so one long word neither overruns its line nor forces the
+    whole block down to the readability floor.
+
+    Unknown languages fall back through pyphen's language mapping; without
+    pyphen the input passes through unchanged. ``measure`` maps a string to
+    its pixel width in the current layout font.
+
+    >>> hyphenate_long_words(['OK'], [30], lambda s: len(s) * 10, 'en', 60)
+    (['OK'], [30])
+    """
+    if not words or max_width <= 0:
+        return words, wl_list
+    try:
+        import pyphen
+        dic = pyphen.Pyphen(lang=pyphen.language_fallback(lang or 'en'))
+    except Exception:
+        return words, wl_list
+    out_words, out_wl = [], []
+    for word, width in zip(words, wl_list):
+        while width > max_width:
+            positions = [p for p in dic.positions(word) if 0 < p < len(word)]
+            split = None
+            for p in positions:
+                head_w = measure(word[:p] + '-')
+                if head_w <= max_width:
+                    split = p  # widest head that still fits a line
+            if split is None:
+                break  # no linguistic point fits (URLs): keep the token whole
+            head = word[:split] + '-'
+            out_words.append(head)
+            out_wl.append(measure(head))
+            word = word[split:]
+            width = measure(word)
+        out_words.append(word)
+        out_wl.append(width)
+    return out_words, out_wl

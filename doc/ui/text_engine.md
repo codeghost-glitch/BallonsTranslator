@@ -127,6 +127,36 @@ but each writing mode owns its flow and placement records. Keep only genuinely
 shared helpers in `layout.py`; do not make it import its concrete subclasses.
 See [Text layout](text_layout.md) for the detailed behavior contract.
 
+## Auto layout fit
+
+`SceneTextManager.layout_textblk` fits translated text into the balloon: the
+image flood fill normally, the detector's bubble outlines when the project has
+them (`_bubble_polygon_for` mirrors the line-geometry attribution in
+`proj_imgtrans.prune_bubble_outlines`; see [Bubble outlines](bubble_outlines.md)).
+Outline fits accept only when **every rendered line's own rect** passes a
+corner/edge-midpoint collision test against the polygon — not the block
+bounding box, whose corners always fall outside a curved block, and not the
+line's first word, which lands before any width cap runs. Outline fits never
+take the coverage-plateau exit; they converge on the probes or the readability
+floor. Detectors without outlines keep the legacy flood-fill path with its 90%
+mask-coverage rule.
+
+Two refinements, both config-gated:
+
+- `pcfg.let_elliptic_layout` (default on): with an outline present, each
+  line's width budget follows an ellipse inscribed in the outline's bounding
+  box (`text_layout.line_is_valid`), curving the block with the balloon.
+  Center and radii both come from the bbox so the ellipse never crosses the
+  outline.
+- Latin-script targets hyphenate tokens wider than the line budget at pyphen
+  points once the font settles (`text_layout.hyphenate_long_words`; pyphen is
+  optional — without it tokens pass through unchanged). CJK targets wrap per
+  character and are never hyphenated.
+
+Verification: `tests/test_auto_layout_fit.py` (fit, collision, centering,
+elliptical shape) and `tests/test_text_layout.py` (hyphenation, ellipse
+budget).
+
 Use these coordinate-space names consistently:
 
 | Space | Meaning |

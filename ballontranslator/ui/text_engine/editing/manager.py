@@ -2,6 +2,7 @@
 from enum import Enum
 from typing import List, Optional, Sequence, Union, Tuple
 import numpy as np
+import cv2
 import copy
 
 from qtpy.QtWidgets import QApplication, QWidget
@@ -37,7 +38,7 @@ from ballontranslator.utils.config import pcfg
 from ballontranslator.utils import shared
 from ballontranslator.utils.imgproc_utils import extract_ballon_region, get_block_mask
 from ballontranslator.utils.text_processing import seg_text, is_cjk
-from ballontranslator.utils.text_layout import layout_text
+from ballontranslator.utils.text_layout import layout_text, hyphenate_long_words
 
 
 def build_path_reorder_map(
@@ -363,6 +364,39 @@ class TextPanel(Widget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
 
+def _bubble_polygon_for(proj, blk) -> Optional[List]:
+    """Page polygon of the detected bubble holding this block's text.
+
+    Mirrors ProjImgTrans.prune_bubble_outlines attribution: line quads
+    and their centroids first, block center as fallback; deepest
+    containment wins when outlines nest.
+    """
+    outlines = proj.get_bubble_outlines(proj.current_img)
+    if not outlines:
+        return None
+    try:
+        lines = np.asarray(blk.lines, np.float32).reshape(-1, 8)
+    except (ValueError, TypeError):
+        lines = np.empty((0, 8), np.float32)
+    if lines.size:
+        quads = lines.reshape(-1, 4, 2)
+        pts = np.concatenate(
+            [quads, quads.mean(axis=1, keepdims=True)], axis=1
+        ).reshape(-1, 2)
+    else:
+        pts = np.asarray(blk.center(), np.float32).reshape(1, 2)
+    best = None
+    best_depth = -1.0
+    for poly in outlines:
+        arr = np.asarray(poly, np.float32)
+        for x, y in pts:
+            depth = cv2.pointPolygonTest(arr, (float(x), float(y)), False)
+            if depth > best_depth:
+                best_depth = depth
+                best = poly
+    return best if best_depth >= 0 else None
+
+
 class SceneTextManager(QObject):
     new_textblk = Signal(int)
     def __init__(self, 
@@ -542,6 +576,9 @@ class SceneTextManager(QObject):
             if self.auto_textlayout_flag and not blk.vertical:
                 translation = blk.translation
                 blk.translation = ''
+                # Layout must fit against the block's detected box; persisted
+                # rich_text would size the item to the previous render instead.
+                blk.rich_text = ''
             blk_item = TextBlkItem(blk, len(self.textblk_item_list), show_rect=self.canvas.textblock_mode)
             if translation:
                 blk.translation = translation
@@ -874,7 +911,6 @@ class SceneTextManager(QObject):
         img = self.imgtrans_proj.img_array
         if img is None:
             return
-
         src_is_cjk = is_cjk(pcfg.module.translate_source)
         tgt_is_cjk = is_cjk(pcfg.module.translate_target)
 
@@ -901,6 +937,7 @@ class SceneTextManager(QObject):
         if not text.strip():
             return
 
+        bubble = None
         if mask is None:
             im_h, im_w = img.shape[:2]
             bounding_rect = blkitem.absBoundingRect(max_h=im_h, max_w=im_w)
@@ -915,8 +952,27 @@ class SceneTextManager(QObject):
                 max_enlarge_ratio = 3
             enlarge_ratio = min(max(bounding_rect[2] / bounding_rect[3], bounding_rect[3] / bounding_rect[2]) * 1.5, max_enlarge_ratio)
             mask, ballon_area, mask_xyxy, region_rect = extract_ballon_region(img, bounding_rect, enlarge_ratio=enlarge_ratio, cal_region_rect=True)
+            bubble = _bubble_polygon_for(self.imgtrans_proj, blkitem.blk)
+            if bubble is not None:
+                # Detector geometry wins over the flood-fill: no window
+                # clipping, no glyph holes, exact centroid for centering.
+                poly_mask = np.zeros(img.shape[:2], np.uint8)
+                cv2.fillPoly(poly_mask, [np.asarray(bubble, np.int32)], 255)
+                px1, py1, px2, py2 = mask_xyxy
+                crop = poly_mask[py1:py2, px1:px2]
+                if crop.any():
+                    mask = crop
+                    ballon_area = int(crop.nonzero()[0].size)
         else:
             mask_xyxy = [bounding_rect[0], bounding_rect[1], bounding_rect[0]+bounding_rect[2], bounding_rect[1]+bounding_rect[3]]
+        poly_arr = np.asarray(bubble, np.float32) if bubble is not None else None
+        # One nonzero pass feeds both the hyphen line budget and the fit loop.
+        mask_ys, mask_xs = np.nonzero(mask)
+        mb_x0 = mb_y0 = mb_x1 = mb_y1 = mb_w = mb_h = 0
+        if mask_ys.size:
+            mb_x0, mb_x1 = int(mask_xs.min()), int(mask_xs.max()) + 1
+            mb_y0, mb_y1 = int(mask_ys.min()), int(mask_ys.max()) + 1
+            mb_w, mb_h = mb_x1 - mb_x0, mb_y1 - mb_y0
         
         words, delimiter = seg_text(text, pcfg.module.translate_target)
         if len(words) < 1:
@@ -961,12 +1017,22 @@ class SceneTextManager(QObject):
                 resize_ratio = min(max(resize_ratio, 0.6), 1)
 
         if resize_ratio != 1:
-            new_font_size = blk_font.pointSizeF() * resize_ratio   
+            new_font_size = blk_font.pointSizeF() * resize_ratio
             blk_font.setPointSizeF(new_font_size)
             wl_list = (np.array(wl_list, np.float64) * resize_ratio).astype(np.int32).tolist()
             line_height = int(line_height * resize_ratio)
             text_w = int(text_w * resize_ratio)
             delimiter_len = int(delimiter_len * resize_ratio)
+
+        # Latin-script hyphenation: after the font settles, split tokens that
+        # still exceed the line budget at linguistic points. CJK scripts wrap
+        # per character and never hyphenate.
+        if not tgt_is_cjk and words:
+            budget = mb_w if mb_w > 0 else mask.shape[1]
+            words, wl_list = hyphenate_long_words(
+                words, wl_list, lambda s: text_size_func(s)[0],
+                pcfg.module.translate_target, budget
+            )
 
         max_central_width = np.inf
         if fmt.alignment == 1:
@@ -976,6 +1042,12 @@ class SceneTextManager(QObject):
                 centroid[1] -= mask_xyxy[1]
             else:
                 centroid = [bounding_rect[2] // 2, bounding_rect[3] // 2]
+            if poly_arr is not None and mask_ys.size:
+                # Lay out on the bubble center, not the detection box center:
+                # the collision rule below maximizes the font only when the
+                # canvas starts centered inside the outline. mask is the
+                # window-cropped polygon, so its pixel mean is window-relative.
+                centroid = [int(mask_xs.mean()), int(mask_ys.mean())]
         else:
             max_central_width = np.inf
             centroid = [0, 0]
@@ -985,6 +1057,18 @@ class SceneTextManager(QObject):
                 abs_centroid = blkitem.blk.lines[0][0]
                 centroid[0] = int(abs_centroid[0] - mask_xyxy[0])
                 centroid[1] = int(abs_centroid[1] - mask_xyxy[1])
+
+        ellipse = None
+        if poly_arr is not None and pcfg.let_elliptic_layout and mb_w > 0 and abs(blkitem.blk.angle) == 0:
+            # Inscribed ellipse from the bubble outline: line_is_valid budgets
+            # each row by the ellipse width there, curving the block with the
+            # balloon instead of filling its bounding rectangle. Center and
+            # radii both come from the bbox so the ellipse never crosses it
+            # (a mean center with bbox radii bulges past lopsided outlines).
+            ellipse = (
+                mb_x0 + mb_w / 2, mb_y0 + mb_h / 2,
+                mb_w / 2 * 0.95, mb_h / 2 * 0.95,
+            )
 
         # Layout, then keep shrinking until the final canvas fits the balloon
         # mask: the ratio heuristic above is only a guess (its 0.6/0.7 floors
@@ -999,15 +1083,16 @@ class SceneTextManager(QObject):
             and pcfg.let_autolayout_flag
             and abs(blkitem.blk.angle) == 0
         )
-        mb_w = mb_h = 0
-        if check_fit:
-            mask_ys, mask_xs = np.nonzero(mask)
-            if mask_ys.size > 0:
-                mb_w = int(mask_xs.max() - mask_xs.min() + 1)
-                mb_h = int(mask_ys.max() - mask_ys.min() + 1)
-            else:
-                check_fit = False
+        if check_fit and mask_ys.size == 0:
+            check_fit = False
 
+        offset_retries = 0
+        prev_frac = -1.0
+        # Coverage is measured on a hole-closed mask: the source image still
+        # carries the original glyphs the flood fill leaves out, and counting
+        # them as off-mask makes an in-balloon text look under-covered.
+        k = max(5, int(np.sqrt(max(int((mask > 0).sum()), 1)) / 12))
+        measure_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8)) if check_fit else mask
         for _ in range(13 if check_fit else 1):
             new_text, xywh, start_from_top, adjust_xy = layout_text(
                 blkitem.blk,
@@ -1023,22 +1108,94 @@ class SceneTextManager(QObject):
                 max_central_width,
                 src_is_cjk=src_is_cjk,
                 tgt_is_cjk=tgt_is_cjk,
-                ref_src_lines=ref_src_lines
+                ref_src_lines=ref_src_lines,
+                ellipse=ellipse
             )
             if not check_fit:
                 break
             x, y, w, h = xywh
             lx, ly = x - mask_xyxy[0], y - mask_xyxy[1]
             inside = 0 <= lx and 0 <= ly and lx + w <= mask.shape[1] and ly + h <= mask.shape[0]
-            if inside and (mask[ly:ly + h, lx:lx + w] > 0).mean() >= 0.98:
+            frac = float((measure_mask[ly:ly + h, lx:lx + w] > 0).mean()) if inside and h > 0 and w > 0 else -1.0
+            # Fit target: the canvas must be inside the window with most of
+            # its area on the mask. Shrink until coverage reaches the target
+            # or stops improving (glyph holes in the source image, irregular
+            # balloon shapes) - a fixed bbox-plus-partial-coverage rule let
+            # up to 40% of the text hang outside round balloons.
+            if poly_arr is not None:
+                # Collision with the detector outline, per rendered line: the
+                # first word of a line lands before any width cap runs, and a
+                # bounding box around curved text always has corners outside
+                # the outline - so probe each line's own rect (corners plus
+                # edge midpoints; non-convex dents slip between corners).
+                line_texts = new_text.split('\n')
+                line_wl = [text_size_func(t)[0] for t in line_texts]
+                if fmt.alignment == 1:
+                    line_rects = [
+                        (x + (w - lw) // 2, y + i * line_height, lw, line_height)
+                        for i, lw in enumerate(line_wl)
+                    ]
+                elif fmt.alignment == 2:
+                    line_rects = [
+                        (x + w - lw, y + i * line_height, lw, line_height)
+                        for i, lw in enumerate(line_wl)
+                    ]
+                else:
+                    line_rects = [
+                        (x, y + i * line_height, lw, line_height)
+                        for i, lw in enumerate(line_wl)
+                    ]
+                clear = True
+                for rx, ry, rw, rh in line_rects:
+                    for qx, qy in (
+                        (rx, ry), (rx + rw, ry), (rx, ry + rh), (rx + rw, ry + rh),
+                        (rx + rw // 2, ry), (rx + rw // 2, ry + rh),
+                        (rx, ry + rh // 2), (rx + rw, ry + rh // 2),
+                    ):
+                        if cv2.pointPolygonTest(poly_arr, (float(qx), float(qy)), False) < 0:
+                            clear = False
+                            break
+                    if not clear:
+                        break
+                if inside and clear:
+                    break
+            elif inside and frac >= 0.9:
                 break
-            # Scale toward the balloon bbox; when the bbox already fits, only
-            # corner spill remains, so nudge down instead of trusting it.
+            if poly_arr is None and inside and prev_frac >= 0 and frac - prev_frac < 0.015:
+                # Coverage plateau: the mask will not take more text. Outline
+                # fits terminate on the collision probes or the readability
+                # floor instead - a plateau here would accept exactly the
+                # lines the probes just rejected (a single word wider than
+                # the bubble at the fitted size).
+                break
+            prev_frac = frac if inside else -1.0
+            # Scale toward the mask bbox; when the bbox size already fits,
+            # only corner spill and placement offset remain. Corner spill
+            # shrinks away; an anchored origin that stays off the mask after
+            # one more shrink never will - accept and stop (free-standing
+            # credits text can sit offset from whatever white region floods
+            # behind it, and chasing that shrinks them to the floor).
             scale = min(mb_w * 0.98 / w, mb_h * 0.98 / h)
             if scale >= 1:
+                off_mask = lx < mb_x0 or ly < mb_y0 or lx + w > mb_x1 or ly + h > mb_y1
+                if off_mask:
+                    offset_retries += 1
+                    # Centered text re-converges on the balloon as it shrinks;
+                    # only side-anchored placement can be stuck off the mask.
+                    if offset_retries > 1 and fmt.alignment != 1:
+                        break
                 scale = 0.9
-            if blk_font.pointSizeF() * scale < orig_font_size * 0.3:
-                break  # ponytail: readability floor, per-glyph fit if this still overflows
+            # Clamp to the readability floor instead of skipping the shrink:
+            # one coarse ratio step can overshoot the floor even when the
+            # floor itself still fits the balloon (big fresh-detected source
+            # fonts need a large first step). 0.15 keeps text recognizable
+            # while letting canvas converge onto boxes whose center sits
+            # off the balloon center.
+            min_size = orig_font_size * 0.15
+            if blk_font.pointSizeF() * scale < min_size:
+                scale = min_size / blk_font.pointSizeF()
+            if scale >= 1:
+                break  # already at the floor
             resize_ratio *= scale
             blk_font.setPointSizeF(blk_font.pointSizeF() * scale)
             wl_list = (np.array(wl_list, np.float64) * scale).astype(np.int32).tolist()
@@ -1075,7 +1232,31 @@ class SceneTextManager(QObject):
             self.pairwidget_list[blkitem.idx].e_trans.setPlainText(new_text)
         if restore_charfmts:
             self.restore_charfmts(blkitem, text, new_text, char_fmts)
+        if resize_ratio != 1:
+            # setPlainText rebuilds the document; when it held persisted
+            # rich_text the document default font stays stale, so re-apply
+            # the fitted size to the new text and re-sync the default (font()
+            # reads it, and the next layout pass bases on it).
+            blkitem.setFontSize(blk_font.pointSizeF())
+            blkitem.document().setDefaultFont(blk_font)
         blkitem.squeezeBoundingRect()
+        # Center the settled text box on the balloon itself: the layout
+        # anchors on the detection box center, which is off the balloon
+        # center for most bubbles, and the item rect (not layout_text's xywh)
+        # is what the canvas renders. Re-measure after each move: the first
+        # moveBy re-anchors the rect through the geometry controller.
+        for _ in range(3):
+            _ys, _xs = np.nonzero(mask)
+            if _ys.size == 0:
+                break
+            _cx = mask_xyxy[0] + float(_xs.mean())
+            _cy = mask_xyxy[1] + float(_ys.mean())
+            _br = blkitem.absBoundingRect(qrect=True)
+            _dx = _cx - (_br.x() + _br.width() / 2)
+            _dy = _cy - (_br.y() + _br.height() / 2)
+            if abs(_dx) <= 1 and abs(_dy) <= 1:
+                break
+            blkitem.moveBy(_dx, _dy)
         return True
     
     def restore_charfmts(self, blkitem: TextBlkItem, text: str, new_text: str, char_fmts: List[QTextCharFormat]):

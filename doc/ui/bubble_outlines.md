@@ -25,6 +25,9 @@ contract.
   and text layers, and refreshes from `updateCanvas()` — page switches and
   pipeline finish need no extra wiring. Headless mode has no canvas; outlines
   still persist in the project.
+- Auto layout consumes outlines as balloon geometry (attribution, collision,
+  elliptical typesetting); that contract lives in
+  [Text engine](text_engine.md#auto-layout-fit).
 
 ## Enable
 

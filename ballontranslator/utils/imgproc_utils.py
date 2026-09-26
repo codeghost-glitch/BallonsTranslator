@@ -299,19 +299,24 @@ def extract_ballon_region(img: np.ndarray, ballon_rect: List, show_process=False
     mask = np.zeros((h, w), np.uint8)
     difres = 10
     seedpnt = (int(w/2), int(h/2))
+    # Size thresholds are relative to the original block rectangle, not the
+    # enlarged window: the window is 2.5-3x the block, so a balloon-sized
+    # contour falls below any fixed share of the window and the mask degrades
+    # to the whole window, which lets layout accept text far outside the balloon.
+    block_area = ballon_rect[2] * ballon_rect[3] * scaleR * scaleR
     for ii in range(len(cons)):
         rect = cv2.boundingRect(cons[ii])
-        if rect[2]*rect[3] < img_area*0.4:
+        if rect[2]*rect[3] < block_area*0.4:
             continue
-        
+
         mask = cv2.drawContours(mask, cons, ii, (255), 2)
         cpmask = np.copy(mask)
         cv2.rectangle(mask, (0, 0), (w-1, h-1), WHITE, 1, cv2.LINE_8)
-        retval, _, _, rect = cv2.floodFill(cpmask, mask=None, seedPoint=seedpnt,  flags=4, newVal=(127), loDiff=(difres, difres, difres), upDiff=(difres, difres, difres))
+        retval, _, _, rect = cv2.floodFill(cpmask, mask=None, seedPoint=seedpnt, flags=4, newVal=(127), loDiff=(difres, difres, difres), upDiff=(difres, difres, difres))
 
-        if retval <= img_area * 0.3:
+        if retval <= block_area * 0.3:
             mask = cv2.drawContours(mask, cons, ii, (0), 2)
-        if retval < min_retval and retval > img_area * 0.3:
+        if retval < min_retval and retval > block_area * 0.3:
             min_retval = retval
             ballon_mask = cpmask
 
