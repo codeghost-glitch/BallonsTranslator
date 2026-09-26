@@ -56,6 +56,60 @@ def _mask_outline(det_mask: np.ndarray) -> Optional[List]:
     return approx.tolist()
 
 
+def _nearby_mask_extent(
+    det_mask: Optional[np.ndarray], box: Tuple[int, int, int, int]
+) -> Optional[Tuple[int, int, int, int]]:
+    """Extent of the mask components plausibly belonging to one detection.
+
+    Only fragments near this detection may enlarge its block box. The seg
+    head emits stray pixels far from its own box, and a full-mask bbox then
+    drags the block across unrelated bubbles: one page of a real chapter
+    carries a single mask pixel 970 px above its detection, which stretched a
+    bottom-row block all the way into the top panel. Components further away
+    than the detection's own size are someone else's text; components within
+    that slack still count, because the mask head routinely spills a few dozen
+    pixels outside the box head.
+
+    >>> import numpy as np
+    >>> mask = np.zeros((64, 64), bool)
+    >>> mask[10:20, 10:20] = True
+    >>> _nearby_mask_extent(mask, (8, 8, 22, 22))
+    (10, 10, 20, 20)
+    >>> mask[63, 63] = True
+    >>> _nearby_mask_extent(mask, (8, 8, 22, 22))
+    (10, 10, 20, 20)
+    >>> _nearby_mask_extent(None, (0, 0, 4, 4)) is None
+    True
+    """
+    if det_mask is None or not det_mask.any():
+        return None
+    x1, y1, x2, y2 = box
+    slack = max(x2 - x1, y2 - y1)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(
+        det_mask.astype(np.uint8), 8
+    )
+    extent = None
+    for idx in range(1, count):
+        left = int(stats[idx, cv2.CC_STAT_LEFT])
+        top = int(stats[idx, cv2.CC_STAT_TOP])
+        right = left + int(stats[idx, cv2.CC_STAT_WIDTH])
+        bottom = top + int(stats[idx, cv2.CC_STAT_HEIGHT])
+        dx = max(0, left - x2, x1 - right)
+        dy = max(0, top - y2, y1 - bottom)
+        if max(dx, dy) > slack:
+            continue
+        if extent is None:
+            extent = [left, top, right, bottom]
+        else:
+            extent[0] = min(extent[0], left)
+            extent[1] = min(extent[1], top)
+            extent[2] = max(extent[2], right)
+            extent[3] = max(extent[3], bottom)
+    if extent is None:
+        return None
+    return tuple(extent)
+
+
 class _QuietRFDETRNoise(logging.Filter):
     """Drop rfdetr warnings that are always true for this integration.
 
@@ -251,18 +305,17 @@ class KoharuLayoutDetector(TextDetectorBase):
                     mask[det_mask] = 255
                 else:
                     mask[y1:y2, x1:x2] = 255
-                # The block box must contain every mask pixel the pipeline later
+                # The block box must contain the mask pixels the pipeline later
                 # zeroes when it drops an untranslatable block; the mask head can
                 # spill outside the box head, and the final dilation grows it
-                # another ksize pixels. Stray fragments left outside the box get
-                # inpainted as artifacts.
-                if det_mask is not None:
-                    ys, xs = np.nonzero(det_mask)
-                    if ys.size:
-                        x1 = min(x1, int(xs.min()))
-                        y1 = min(y1, int(ys.min()))
-                        x2 = max(x2, int(xs.max()) + 1)
-                        y2 = max(y2, int(ys.max()) + 1)
+                # another ksize pixels. Mask fragments far from this detection
+                # belong to another block, so they must not stretch the box.
+                extent = _nearby_mask_extent(det_mask, (x1, y1, x2, y2))
+                if extent is not None:
+                    x1 = min(x1, extent[0])
+                    y1 = min(y1, extent[1])
+                    x2 = max(x2, extent[2])
+                    y2 = max(y2, extent[3])
                 x1, y1 = max(x1 - ksize, 0), max(y1 - ksize, 0)
                 x2, y2 = min(x2 + ksize, im_w), min(y2 + ksize, im_h)
                 pts = xywh2xyxypoly(np.array([[x1, y1, x2 - x1, y2 - y1]])).reshape(4, 2).tolist()

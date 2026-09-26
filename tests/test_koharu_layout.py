@@ -79,3 +79,32 @@ def test_mask_covers_detected_text_ink():
         claimed[214:386, max(x - 6, 0):x + 7] = True
     missed = int(((gray < 160) & claimed & ~(mask > 0)).sum())
     assert missed == 0, f'{missed} text ink px left outside the inpaint mask'
+
+
+def test_stray_mask_fragment_does_not_stretch_block_box():
+    """Only mask fragments touching the detection may widen its box.
+
+    Reproduces page 1 of 第4.3話: one stray mask pixel 970 px from its
+    detection stretched a bottom-row block into the top panel, so the block
+    spanned several bubbles and was labelled outside its own.
+    """
+    from custom_modules.detector_koharu_layout import _nearby_mask_extent
+
+    mask = np.zeros((1300, 1200), bool)
+    mask[1080:1224, 1085:1106] = True   # the detection's own mask
+    mask[110, 1116] = True              # stray seg-head fragment, far away
+    box = (1085, 1080, 1105, 1223)
+    assert _nearby_mask_extent(mask, box) == (1085, 1080, 1106, 1224)
+
+    # Legitimate spill: mask reaching past the box, whether attached to it or
+    # a fragment a few dozen pixels away, is kept.
+    mask2 = np.zeros((1300, 1200), bool)
+    mask2[1070:1240, 1085:1106] = True
+    assert _nearby_mask_extent(mask2, box) == (1085, 1070, 1106, 1240)
+    mask3 = np.zeros((1300, 1200), bool)
+    mask3[1080:1224, 1085:1106] = True
+    mask3[1040:1070, 1085:1106] = True   # detached, 10 px above the box
+    assert _nearby_mask_extent(mask3, box) == (1085, 1040, 1106, 1224)
+
+    assert _nearby_mask_extent(np.zeros((4, 4), bool), (0, 0, 2, 2)) is None
+    assert _nearby_mask_extent(None, box) is None
