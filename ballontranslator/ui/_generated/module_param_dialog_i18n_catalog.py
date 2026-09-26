@@ -223,6 +223,18 @@ MODULE_PARAM_CATALOG = {
     ('ocr', 'hayai_ocr_v2', 'max_num_patches', 'display_name'): {
         "source": 'Max Num Patches', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Max Num Patches'),
     },
+    ('ocr', 'hayai_ocr_v25_nova', '', 'description'): {
+        "source": 'Hayai OCR v2.5 Nova crop recognition model.', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Hayai OCR v2.5 Nova crop recognition model.'),
+    },
+    ('ocr', 'hayai_ocr_v25_nova', 'device', 'display_name'): {
+        "source": 'device', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'device'),
+    },
+    ('ocr', 'hayai_ocr_v25_nova', 'max_num_patches', 'description'): {
+        "source": 'Maximum image patches. 256 for throughput, 384 for balanced quality, 512 for small or stylized glyphs.', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Maximum image patches. 256 for throughput, 384 for balanced quality, 512 for small or stylized glyphs.'),
+    },
+    ('ocr', 'hayai_ocr_v25_nova', 'max_num_patches', 'display_name'): {
+        "source": 'Max Num Patches', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'Max Num Patches'),
+    },
     ('ocr', 'manga_ocr', 'device', 'display_name'): {
         "source": 'device', "translate": lambda: QCoreApplication.translate('ModuleParamDialog', 'device'),
     },
