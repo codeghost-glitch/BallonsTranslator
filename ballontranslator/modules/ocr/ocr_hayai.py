@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 import numpy as np
@@ -14,6 +15,27 @@ from .base import DEVICE_SELECTOR, OCRBase, register_OCR
 
 MODEL_PATH = "data/models/hayai-ocr-v2"
 VISION_MODEL_ID = "google/siglip2-base-patch16-naflex"
+
+
+class _QuietHayaiLoadNoise(logging.Filter):
+    """Drop third-party load-time warnings that hold on every load.
+
+    - urllib3 retries when Hugging Face advertises HTTP/3 it cannot negotiate;
+      the HTTP/1 fallback succeeds.
+    - tokenizer_config.json declares "TokenizersBackend" while this module
+      loads through PreTrainedTokenizerFast (class-name skew, works either way).
+    - transformers verifies tensor-parallel plans even for models that define
+      none, so it always reports every layer as unsharded here.
+    """
+
+    _SUBSTRINGS = (
+        "MustDowngradeError",
+        "The tokenizer class you load from this checkpoint",
+        "The following layers were not sharded",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not any(s in record.getMessage() for s in self._SUBSTRINGS)
 
 
 @register_OCR("hayai_ocr_v2")
@@ -83,6 +105,15 @@ class HayaiOCRV2(OCRBase):
         return value
 
     def _load_model(self) -> None:
+        for logger_name in (
+            "urllib3.connectionpool",
+            "transformers.tokenization_utils_base",
+            "transformers.integrations.tensor_parallel",
+        ):
+            target = logging.getLogger(logger_name)
+            if not any(isinstance(f, _QuietHayaiLoadNoise) for f in target.filters):
+                target.addFilter(_QuietHayaiLoadNoise())
+
         processor = Siglip2ImageProcessor.from_pretrained(VISION_MODEL_ID)
         tokenizer = PreTrainedTokenizerFast.from_pretrained(
             MODEL_PATH,

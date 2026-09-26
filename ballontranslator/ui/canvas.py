@@ -15,7 +15,7 @@ except:
     from qtpy.QtGui import QUndoStack, QUndoCommand
 
 from .misc import ndarray2pixmap, QKEY, QNUMERIC_KEYS, ARROWKEY2DIRECTION
-from .text_engine.item import TextBlkItem, TextBlock
+from .text_engine.item import TextBlkItem, TextBlock, TEXTRECT_SHOW_COLOR
 from .text_engine.shape_control import (
     CONTROL_ITEM_DATA_KEY,
     TextBlkShapeControl,
@@ -313,6 +313,16 @@ class Canvas(QGraphicsScene):
         self.inpaintLayer.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self.drawingLayer = DrawingLayer()
         self.drawingLayer.setTransformationMode(Qt.TransformationMode.FastTransformation)
+        self.bubbleOutlineLayer = QGraphicsPathItem()
+        # Cosmetic dashed accent line: constant screen width, visually distinct
+        # from the solid block-region guides; the same accent tints the bubble
+        # interior through a low-alpha fill.
+        outline_pen = QPen(TEXTRECT_SHOW_COLOR, 4.0, Qt.PenStyle.DashLine)
+        outline_pen.setCosmetic(True)
+        self.bubbleOutlineLayer.setPen(outline_pen)
+        self.bubbleOutlineLayer.setBrush(QColor(30, 147, 229, 60))
+        # Decorative only: never swallow mouse events meant for the layers below.
+        self.bubbleOutlineLayer.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.textLayer = QGraphicsPixmapItem()
         self.orderBadgeLayer = QGraphicsRectItem()
         self.orderBadgeLayer.setZValue(100.0)
@@ -327,6 +337,9 @@ class Canvas(QGraphicsScene):
         self.addItem(self.baseLayer)
         self.inpaintLayer.setParentItem(self.baseLayer)
         self.drawingLayer.setParentItem(self.baseLayer)
+        # Parent order decides stacking for equal z: outlines above the image
+        # and drawing layers, below text blocks.
+        self.bubbleOutlineLayer.setParentItem(self.baseLayer)
         self.textLayer.setParentItem(self.baseLayer)
         self.orderBadgeLayer.setParentItem(self.textLayer)
         self.txtblkShapeControl.setParentItem(self.baseLayer)
@@ -1373,6 +1386,20 @@ class Canvas(QGraphicsScene):
                 self.gv.viewportTransform(),
             )
 
+    def _refresh_bubble_outlines(self) -> None:
+        """Rebuild the current page's detector bubble outline paths."""
+        path = QPainterPath()
+        proj = self.imgtrans_proj
+        if proj is not None and proj.current_img is not None:
+            for poly in proj.get_bubble_outlines(proj.current_img):
+                if not poly:
+                    continue
+                path.moveTo(QPointF(poly[0][0], poly[0][1]))
+                for x, y in poly[1:]:
+                    path.lineTo(QPointF(x, y))
+                path.closeSubpath()
+        self.bubbleOutlineLayer.setPath(path)
+
     def updateCanvas(self) -> None:
         self.alpha_mask_edit_session.deactivate()
         self.cancel_path_reorder()
@@ -1387,6 +1414,7 @@ class Canvas(QGraphicsScene):
         self.clearSelection()
         self.setProjSaveState(False)
         self.updateLayers()
+        self._refresh_bubble_outlines()
 
         if self.base_pixmap is not None:
             pixmap = self.base_pixmap.copy()

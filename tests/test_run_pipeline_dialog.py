@@ -113,7 +113,6 @@ class RunPipelineDialogTests(unittest.TestCase):
         )
         self._pipeline_general_settings = (
             pcfg.module.keep_exist_textlines,
-            pcfg.restore_ocr_empty,
             pcfg.module.ocr_font_detect,
             pcfg.module.ocr_text_postprocess,
             pcfg.module.check_need_inpaint,
@@ -169,7 +168,6 @@ class RunPipelineDialogTests(unittest.TestCase):
         )
         (
             pcfg.module.keep_exist_textlines,
-            pcfg.restore_ocr_empty,
             pcfg.module.ocr_font_detect,
             pcfg.module.ocr_text_postprocess,
             pcfg.module.check_need_inpaint,

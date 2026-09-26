@@ -1911,6 +1911,14 @@ class MainWindow(mainwindow_cls):
         self._run_imgtrans_wo_textstyle_update = False
         self._render_only = False
         self._render_global_format = None
+        if not shared.HEADLESS and self.imgtrans_proj is not None \
+                and self.imgtrans_proj.current_img is not None:
+            # The last stage can rewrite mask/inpainted files after the final
+            # page-finished signal, so the open page may still show pre-run
+            # layers (e.g. mask pixels of blocks the pipeline removed). Reload
+            # the arrays from disk and repaint the layers.
+            self.imgtrans_proj.set_current_img(self.imgtrans_proj.current_img)
+            self.canvas.updateLayers()
         if pcfg.module.empty_runcache and not shared.HEADLESS:
             self.module_manager.unload_all_models()
         if shared.args.export_translation_txt:

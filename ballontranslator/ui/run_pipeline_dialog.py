@@ -767,15 +767,6 @@ class RunPipelineDialog(QDialog):
         )
 
     def _build_ocr_settings(self, section: QWidget, layout: QVBoxLayout):
-        self.remove_empty_textblocks = self._add_checkbox_setting(
-            section,
-            layout,
-            'RunPipelineRemoveEmptyTextblocks',
-            self.tr('Remove empty textblocks'),
-            pcfg.restore_ocr_empty,
-            pcfg,
-            'restore_ocr_empty',
-        )
         self.font_detection = self._add_checkbox_setting(
             section,
             layout,

@@ -254,7 +254,26 @@ def text_is_empty(text) -> bool:
         return True    
     elif text is None:
         return True
-    
+
+def text_is_punctuation_only(text) -> bool:
+    """True when text holds no letter or number, i.e. nothing to translate.
+
+    Empty and None count as punctuation-only; accepts the same shapes as
+    text_is_empty.
+
+    >>> text_is_punctuation_only('････････････')
+    True
+    >>> text_is_punctuation_only('うるさい...')
+    False
+    >>> text_is_punctuation_only(['…', '!!'])
+    True
+    """
+    if isinstance(text, list):
+        return all(text_is_punctuation_only(t) for t in text)
+    if not isinstance(text, str):
+        return True
+    return not any(ch.isalnum() for ch in text)
+
 def empty_func(*args, **kwargs):
     return
 
