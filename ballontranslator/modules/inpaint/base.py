@@ -21,7 +21,7 @@ def filter_mask_by_bboxes(mask: np.ndarray, textblock_list: List[TextBlock] = No
 
     Example:
         >>> mask = np.full((4, 5), 255, dtype=np.uint8)
-        >>> blk = TextBlock(xyxy=[1, 1, 3, 2])
+        >>> blk = TextBlock(xyxy=[1, 1, 3, 2], lines=[[[1, 1], [3, 1], [3, 2], [1, 2]]])
         >>> filtered = filter_mask_by_bboxes(mask, [blk])
         >>> filtered.tolist()
         [[255, 255, 255, 255, 255], [255, 255, 255, 255, 255], [255, 255, 255, 255, 255], [255, 255, 255, 255, 255]]
@@ -45,6 +45,44 @@ def filter_mask_by_bboxes(mask: np.ndarray, textblock_list: List[TextBlock] = No
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     rect_mask = cv2.dilate(rect_mask, kernel)
     return cv2.bitwise_and(mask, rect_mask)
+
+
+def complete_mask_on_ink(img: np.ndarray, mask: np.ndarray, halo: int = 9, clearance: int = 6) -> np.ndarray:
+    """Pull glyph ink the detector missed into the inpaint mask.
+
+    Seg heads under-cover thin stroke tails (koharu's measured up to 7 px
+    beyond its dilated mask), and a mask boundary crossing live ink leaves
+    gray glyph remnants after inpainting. Any page ink within ``halo`` pixels
+    of the mask joins it with ``clearance`` fresh pixels so the model's
+    boundary always lands on clean background. Ink is measured against the
+    local median, so both dark-on-light and light-on-dark text qualify, and
+    tone texture far from the mask is ignored.
+
+    Example:
+        >>> img = np.full((40, 60, 3), 255, np.uint8)
+        >>> img[10, 33:41] = 0            # stroke tail the detector missed
+        >>> img[30, 5:12] = 0             # unrelated ink, far from the mask
+        >>> mask = np.zeros((40, 60), np.uint8)
+        >>> mask[10, 42:50] = 255
+        >>> out = complete_mask_on_ink(img, mask)
+        >>> bool(out[10, 34]), bool(out[10, 39])
+        (True, True)
+        >>> bool(out[30, 8])
+        False
+    """
+    if mask is None or img is None:
+        return mask
+    gray = img.mean(axis=2) if img.ndim == 3 else img
+    local_bg = cv2.medianBlur(gray.astype(np.uint8), 21)
+    ink = np.abs(gray.astype(np.int16) - local_bg.astype(np.int16)) > 30
+    halo_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * halo + 1, 2 * halo + 1), (halo, halo))
+    halo_mask = cv2.dilate(mask, halo_kernel)
+    extra = (ink & (halo_mask > 0)).astype(np.uint8) * 255
+    if not extra.any():
+        return mask
+    clearance_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * clearance + 1, 2 * clearance + 1), (clearance, clearance))
+    grown = cv2.dilate(extra, clearance_kernel)
+    return np.maximum(mask, grown)
 
 
 def inpaint_handle_alpha_channel(original_alpha, mask):
@@ -135,6 +173,10 @@ class InpainterBase(BaseModule):
 
         if pcfg.module.filter_mask_by_bboxes:
             mask = filter_mask_by_bboxes(mask, textblock_list)
+
+        # Never let the model's boundary cut live stroke ink: complete the
+        # mask on nearby page ink before any branch consumes it.
+        mask = complete_mask_on_ink(img_rgb, mask)
         
         if not self.inpaint_by_block or textblock_list is None:
             if check_need_inpaint:
