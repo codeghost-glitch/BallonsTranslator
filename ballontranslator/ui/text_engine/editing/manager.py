@@ -888,6 +888,7 @@ class SceneTextManager(QObject):
             return
 
         blk_font = blkitem.font()
+        orig_font_size = blk_font.pointSizeF()
         fmt = blkitem.get_fontformat()
         blk_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, fmt.letter_spacing * 100)
         text_size_func = lambda text: get_text_size(QFontMetricsF(blk_font), text)
@@ -985,26 +986,68 @@ class SceneTextManager(QObject):
                 centroid[0] = int(abs_centroid[0] - mask_xyxy[0])
                 centroid[1] = int(abs_centroid[1] - mask_xyxy[1])
 
-        new_text, xywh, start_from_top, adjust_xy = layout_text(
-            blkitem.blk,
-            mask, 
-            mask_xyxy, 
-            centroid, 
-            words, 
-            wl_list, 
-            delimiter, 
-            delimiter_len, 
-            line_height, 
-            0, 
-            max_central_width,
-            src_is_cjk=src_is_cjk,
-            tgt_is_cjk=tgt_is_cjk,
-            ref_src_lines=ref_src_lines
+        # Layout, then keep shrinking until the final canvas fits the balloon
+        # mask: the ratio heuristic above is only a guess (its 0.6/0.7 floors
+        # alone leave long translations overflowing), and layout_text stacks
+        # lines with no vertical limit. Fresh word lists per attempt, because
+        # layout_lines pops from them. Rotated blocks lay out once and keep the
+        # legacy width-only adjustment below: layout_text wraps in a rotated
+        # frame this mask check cannot sample.
+        check_fit = (
+            self.auto_textlayout_flag
+            and pcfg.let_fntsize_flag == 0
+            and pcfg.let_autolayout_flag
+            and abs(blkitem.blk.angle) == 0
         )
+        mb_w = mb_h = 0
+        if check_fit:
+            mask_ys, mask_xs = np.nonzero(mask)
+            if mask_ys.size > 0:
+                mb_w = int(mask_xs.max() - mask_xs.min() + 1)
+                mb_h = int(mask_ys.max() - mask_ys.min() + 1)
+            else:
+                check_fit = False
+
+        for _ in range(13 if check_fit else 1):
+            new_text, xywh, start_from_top, adjust_xy = layout_text(
+                blkitem.blk,
+                mask,
+                mask_xyxy,
+                centroid,
+                list(words),
+                list(wl_list),
+                delimiter,
+                delimiter_len,
+                line_height,
+                0,
+                max_central_width,
+                src_is_cjk=src_is_cjk,
+                tgt_is_cjk=tgt_is_cjk,
+                ref_src_lines=ref_src_lines
+            )
+            if not check_fit:
+                break
+            x, y, w, h = xywh
+            lx, ly = x - mask_xyxy[0], y - mask_xyxy[1]
+            inside = 0 <= lx and 0 <= ly and lx + w <= mask.shape[1] and ly + h <= mask.shape[0]
+            if inside and (mask[ly:ly + h, lx:lx + w] > 0).mean() >= 0.98:
+                break
+            # Scale toward the balloon bbox; when the bbox already fits, only
+            # corner spill remains, so nudge down instead of trusting it.
+            scale = min(mb_w * 0.98 / w, mb_h * 0.98 / h)
+            if scale >= 1:
+                scale = 0.9
+            if blk_font.pointSizeF() * scale < orig_font_size * 0.3:
+                break  # ponytail: readability floor, per-glyph fit if this still overflows
+            resize_ratio *= scale
+            blk_font.setPointSizeF(blk_font.pointSizeF() * scale)
+            wl_list = (np.array(wl_list, np.float64) * scale).astype(np.int32).tolist()
+            line_height = int(line_height * scale)
+            delimiter_len = int(delimiter_len * scale)
 
         # font size post adjustment
         post_resize_ratio = 1
-        if adaptive_fntsize:
+        if adaptive_fntsize and not check_fit:
             downscale_constraint = 0.5
             w = xywh[2]
             post_resize_ratio = np.clip(max(region_rect[2] / w, downscale_constraint), 0, 1)

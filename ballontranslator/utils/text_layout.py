@@ -470,8 +470,13 @@ def layout_text(
     if alignment == 1:
         abs_x = int(round(center_x - canvas_w / 2))
         abs_y = int(round(center_y - canvas_h / 2))
-    else:
+    elif abs(angle) > 0:
         abs_x = shifted_x
         abs_y = shifted_y
+    else:
+        # canvas_l/canvas_t are mask-relative; return window coordinates to
+        # match the center path so callers can test placement against the mask.
+        abs_x = int(canvas_l + mask_xyxy[0])
+        abs_y = int(canvas_t + mask_xyxy[1])
 
     return concated_text, [abs_x, abs_y, canvas_w, canvas_h], start_from_top, adjust_xy
