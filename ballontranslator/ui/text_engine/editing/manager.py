@@ -364,6 +364,23 @@ class TextPanel(Widget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
 
+def _attribution_points(blk) -> np.ndarray:
+    """Line quads plus centroids for one block, block center as fallback.
+
+    Shared by bubble attribution and outline ownership counting.
+    """
+    try:
+        lines = np.asarray(blk.lines, np.float32).reshape(-1, 8)
+    except (ValueError, TypeError):
+        lines = np.empty((0, 8), np.float32)
+    if lines.size:
+        quads = lines.reshape(-1, 4, 2)
+        return np.concatenate(
+            [quads, quads.mean(axis=1, keepdims=True)], axis=1
+        ).reshape(-1, 2)
+    return np.asarray(blk.center(), np.float32).reshape(1, 2)
+
+
 def _bubble_polygon_for(proj, blk) -> Optional[List]:
     """Page polygon of the detected bubble holding this block's text.
 
@@ -374,17 +391,7 @@ def _bubble_polygon_for(proj, blk) -> Optional[List]:
     outlines = proj.get_bubble_outlines(proj.current_img)
     if not outlines:
         return None
-    try:
-        lines = np.asarray(blk.lines, np.float32).reshape(-1, 8)
-    except (ValueError, TypeError):
-        lines = np.empty((0, 8), np.float32)
-    if lines.size:
-        quads = lines.reshape(-1, 4, 2)
-        pts = np.concatenate(
-            [quads, quads.mean(axis=1, keepdims=True)], axis=1
-        ).reshape(-1, 2)
-    else:
-        pts = np.asarray(blk.center(), np.float32).reshape(1, 2)
+    pts = _attribution_points(blk)
     best = None
     best_depth = -1.0
     for poly in outlines:
@@ -947,7 +954,20 @@ class SceneTextManager(QObject):
         bubble = None
         if mask is None:
             im_h, im_w = img.shape[:2]
-            bounding_rect = blkitem.absBoundingRect(max_h=im_h, max_w=im_w)
+            # Fit against the detection box, not the item rect: squeeze and
+            # re-layout shrink the item toward its text, and a window built
+            # from it ratchets down until growth has no room left. The
+            # detection box stays put until the next detect run. Rich-text
+            # init and oversized blocks can push it past the page edge, and
+            # enlarge_window inverts when that happens - clamp first.
+            bounding_rect = list(blkitem.blk.bounding_rect())
+            bx, by = max(bounding_rect[0], 0), max(bounding_rect[1], 0)
+            bw = min(bounding_rect[0] + bounding_rect[2], im_w) - bx
+            bh = min(bounding_rect[1] + bounding_rect[3], im_h) - by
+            if bw > 0 and bh > 0:
+                bounding_rect = [bx, by, bw, bh]
+            else:
+                bounding_rect = blkitem.absBoundingRect(max_h=im_h, max_w=im_w)
             if bounding_rect[2] <= 0 or bounding_rect[3] <= 0:
                 blkitem.setPlainText(text)
                 if len(self.pairwidget_list) > blkitem.idx:
@@ -968,8 +988,30 @@ class SceneTextManager(QObject):
                 px1, py1, px2, py2 = mask_xyxy
                 crop = poly_mask[py1:py2, px1:px2]
                 if crop.any():
-                    mask = crop
-                    ballon_area = int(crop.nonzero()[0].size)
+                    # One block owns this outline: fit against the whole
+                    # bubble. The detection-box window clips balloons larger
+                    # than the box, and the clipped bbox caps growth early.
+                    # A polygon holding several blocks is a joined
+                    # multi-bubble; its window band keeps each block near
+                    # its own text instead of re-centering both on the seam.
+                    bubble_arr = np.asarray(bubble, np.float32)
+                    page_blocks = getattr(self.imgtrans_proj, 'pages', None) or {}
+                    page_blocks = page_blocks.get(self.imgtrans_proj.current_img, [])
+                    holders = sum(
+                        1 for other in page_blocks
+                        if any(
+                            cv2.pointPolygonTest(bubble_arr, (float(x), float(y)), False) >= 0
+                            for x, y in _attribution_points(other)
+                        )
+                    )
+                    if holders <= 1:
+                        bx, by, bw, bh = cv2.boundingRect(np.asarray(bubble, np.int32))
+                        mask_xyxy = [bx, by, bx + bw, by + bh]
+                        mask = poly_mask[by:by + bh, bx:bx + bw]
+                        ballon_area = int(mask.nonzero()[0].size)
+                    else:
+                        mask = crop
+                        ballon_area = int(crop.nonzero()[0].size)
         else:
             mask_xyxy = [bounding_rect[0], bounding_rect[1], bounding_rect[0]+bounding_rect[2], bounding_rect[1]+bounding_rect[3]]
         poly_arr = np.asarray(bubble, np.float32) if bubble is not None else None
@@ -1064,6 +1106,13 @@ class SceneTextManager(QObject):
                 abs_centroid = blkitem.blk.lines[0][0]
                 centroid[0] = int(abs_centroid[0] - mask_xyxy[0])
                 centroid[1] = int(abs_centroid[1] - mask_xyxy[1])
+
+        if poly_arr is not None and mb_w > 0:
+            # Wrap column for outline fits: a single long line would use the
+            # full width while the bubble's height stays empty, and growth is
+            # then width-bound. 80% of the bubble keeps lines ragged inside
+            # the ellipse caps and lets the font grow until the height fills.
+            max_central_width = mb_w * 0.8
 
         ellipse = None
         if poly_arr is not None and pcfg.let_elliptic_layout and mb_w > 0 and abs(blkitem.blk.angle) == 0:
