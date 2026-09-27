@@ -37,6 +37,7 @@ from ..formatting.panel import FontFormatPanel
 from ballontranslator.utils.config import pcfg
 from ballontranslator.utils import shared
 from ballontranslator.utils.imgproc_utils import extract_ballon_region, get_block_mask
+from ballontranslator.utils.logger import logger as LOGGER
 from ballontranslator.utils.text_processing import seg_text, is_cjk
 from ballontranslator.utils.text_layout import (
     layout_text,
@@ -1352,6 +1353,15 @@ class SceneTextManager(QObject):
             if blk_font.pointSizeF() * scale < min_size:
                 scale = min_size / blk_font.pointSizeF()
             if scale >= 1:
+                # Bottom of the readability floor with text still outside
+                # the balloon. The block needs a shorter translation, a
+                # wider balloon, or a hand - and nothing downstream would
+                # ever say so, so the overflow reads as a layout result.
+                LOGGER.warning(
+                    'Text still overflows its balloon at the readability floor '
+                    '(%.1fpx, %d lines): %r',
+                    blk_font.pointSizeF(), len(new_text.split('\n')), text[:40],
+                )
                 break  # already at the floor
             resize_ratio *= scale
             blk_font.setPointSizeF(blk_font.pointSizeF() * scale)
