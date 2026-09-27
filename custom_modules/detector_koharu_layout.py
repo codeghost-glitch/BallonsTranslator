@@ -18,6 +18,7 @@ from ballontranslator.modules.textdetector.base import (
     register_textdetectors,
 )
 from ballontranslator.utils.imgproc_utils import xywh2xyxypoly
+from ballontranslator.utils.logger import logger as LOGGER
 from ballontranslator.utils.textblock import (
     examine_textblk,
     mit_merge_textlines,
@@ -319,6 +320,41 @@ def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int) -> Lis
             boxes = next_boxes
         out.extend(boxes)
     return out
+
+
+def _unmasked_ink_fraction(gray: np.ndarray, mask: np.ndarray, box) -> Optional[float]:
+    """Share of a block box's source ink that the inpaint mask covers.
+
+    ``None`` when the box holds too little ink to judge (a genuine
+    punctuation-only bubble). Ink is measured against the box's own median
+    so bubble strokes and panel borders are not counted as text.
+
+    A block whose ink mostly escapes the mask is a phantom: a box widened
+    past its own detection leaves glyphs that nothing will inpaint.
+
+    >>> g = np.full((40, 40), 240, np.uint8)
+    >>> g[10:30, 10:20] = 20
+    >>> on_ink = np.zeros((40, 40), np.uint8)
+    >>> on_ink[10:30, 10:20] = 255
+    >>> round(_unmasked_ink_fraction(g, on_ink, (0, 0, 40, 40)), 2)
+    1.0
+    >>> off_ink = np.zeros((40, 40), np.uint8)
+    >>> off_ink[10:30, 30:40] = 255
+    >>> round(_unmasked_ink_fraction(g, off_ink, (0, 0, 40, 40)), 2)
+    0.0
+    """
+    x, y, w, h = box
+    H, W = gray.shape[:2]
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(W, x + w), min(H, y + h)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    patch = gray[y0:y1, x0:x1]
+    ink = patch < float(np.median(patch)) - 30
+    total = int(ink.sum())
+    if total < 30:
+        return None
+    return float((ink & (mask[y0:y1, x0:x1] > 0)).sum()) / total
 
 
 def _drop_contained_detections(items: List[dict]) -> List[dict]:
@@ -716,6 +752,22 @@ class KoharuLayoutDetector(TextDetectorBase):
         if ksize > 0:
             element = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ksize + 1, 2 * ksize + 1), (ksize, ksize))
             mask = cv2.dilate(mask, element)
+
+        # A box wider than the detection that produced it (a seam-cut sliver,
+        # a duplicate that survived dedup) leaves source ink the mask never
+        # covers, and the inpainter will not remove it. Measured across 74
+        # blocks of a real chapter, healthy blocks sit at 0.86-1.00 and the
+        # one known phantom sat at 0.31, so warn only well below that band.
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        for idx, blk in enumerate(blk_list):
+            frac = _unmasked_ink_fraction(gray, mask, blk.bounding_rect())
+            if frac is not None and frac < 0.5:
+                LOGGER.warning(
+                    'Block %d box %s has only %.0f%% of its ink in the inpaint '
+                    'mask; this box is likely a detection artifact and its '
+                    'text will not be inpainted.',
+                    idx, blk.bounding_rect(), frac * 100,
+                )
 
         return mask, blk_list
 
