@@ -130,3 +130,22 @@ def test_split_two_lobed_separates_joined_bubbles():
     assert min(xs) < 55 < max(xs)
     # a single bubble never splits
     assert _split_two_lobed(a.reshape(-1, 2).tolist()) is None
+
+
+def test_weak_bubble_kept_only_when_head_stacks_it():
+    from custom_modules.detector_koharu_layout import (
+        _selected_bubble_instances,
+    )
+
+    page11 = [
+        {'box': [178, 104, 461, 504], 'conf': 0.715},
+        {'box': [914, 949, 1170, 1416], 'conf': 0.387},
+        {'box': [892, 946, 1171, 1461], 'conf': 0.301},
+        {'box': [905, 949, 1172, 1458], 'conf': 0.289},
+        {'box': [903, 945, 1167, 1453], 'conf': 0.210},
+    ]
+    selected = _selected_bubble_instances(page11, 0.5)
+    assert len(selected) == 5  # strong one plus the nested weak stack
+    # a lone weak instance stays rejected: no second opinion, no outline
+    lone = [{'box': [0, 0, 10, 10], 'conf': 0.387}]
+    assert _selected_bubble_instances(lone, 0.5) == []

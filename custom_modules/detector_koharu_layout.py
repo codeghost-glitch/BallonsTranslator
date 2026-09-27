@@ -56,6 +56,49 @@ def _mask_outline(det_mask: np.ndarray) -> Optional[List]:
     return approx.tolist()
 
 
+def _containment_ratio(box_a: List, box_b: List) -> float:
+    """Overlap over the smaller box's area (1.0 when one contains the other).
+
+    >>> _containment_ratio([0, 0, 10, 10], [5, 5, 15, 15])
+    0.25
+    >>> _containment_ratio([0, 0, 10, 10], [2, 2, 8, 8])
+    1.0
+    """
+    ax0, ay0, ax1, ay1 = box_a
+    bx0, by0, bx1, by1 = box_b
+    inter = (
+        max(0.0, min(ax1, bx1) - max(ax0, bx0))
+        * max(0.0, min(ay1, by1) - max(ay0, by0))
+    )
+    area_a = (ax1 - ax0) * (ay1 - ay0)
+    area_b = (bx1 - bx0) * (by1 - by0)
+    if inter <= 0 or area_a <= 0 or area_b <= 0:
+        return 0.0
+    return inter / min(area_a, area_b)
+
+
+def _selected_bubble_instances(candidates: List[dict], threshold: float) -> List[dict]:
+    """Keep strong bubble instances and weak ones the head agrees on.
+
+    Complex balloons score below the model-card threshold while the head
+    fires several nested instances of the same balloon; a lone weak
+    instance stays rejected, a consistent stack is real.
+
+    >>> cands = [{'box': [0, 0, 10, 10], 'conf': 0.7},
+    ...          {'box': [1, 1, 9, 9], 'conf': 0.3},
+    ...          {'box': [50, 50, 60, 60], 'conf': 0.3}]
+    >>> [c['conf'] for c in _selected_bubble_instances(cands, 0.5)]
+    [0.7, 0.3]
+    """
+    return [
+        cand for i, cand in enumerate(candidates)
+        if cand['conf'] >= threshold or any(
+            _containment_ratio(cand['box'], other['box']) >= 0.6
+            for j, other in enumerate(candidates) if j != i
+        )
+    ]
+
+
 def _split_two_lobed(outline: List) -> Optional[List[List]]:
     """Cut a joined two-bubble contour at its neck into two closed polygons.
 
@@ -154,16 +197,10 @@ def _drop_contained_detections(items: List[dict]) -> List[dict]:
         for j in range(i + 1, len(items)):
             if dropped[i] or dropped[j]:
                 continue
+            if _containment_ratio(boxes[i], boxes[j]) < 0.6:
+                continue
             bx0, by0, bx1, by1 = boxes[j]
-            inter = (
-                max(0.0, min(ax1, bx1) - max(ax0, bx0))
-                * max(0.0, min(ay1, by1) - max(ay0, by0))
-            )
-            if inter <= 0:
-                continue
             area_j = (bx1 - bx0) * (by1 - by0)
-            if inter / min(area_i, area_j) < 0.6:
-                continue
             # Keep the larger box (the full text run), earlier on ties.
             if area_j < area_i:
                 dropped[j] = True
@@ -395,32 +432,24 @@ class KoharuLayoutDetector(TextDetectorBase):
         ksize = max(int(self.get_param_value('mask dilate size')), 0)
 
         detected_items = []
+        bubble_candidates = []
         if dets is not None and len(dets) > 0:
             masks = dets.mask
             for i, (cls_id, conf) in enumerate(zip(dets.class_id, dets.confidence)):
                 cls_id = int(cls_id)
                 if cls_id == 2:
-                    if not want_bubble or conf < bubble_threshold:
+                    if not want_bubble:
                         continue
                     x1, y1, x2, y2 = dets.xyxy[i].astype(int)
                     x1, y1 = max(x1, 0), max(y1, 0)
                     x2, y2 = min(x2, im_w), min(y2, im_h)
                     if x2 <= x1 or y2 <= y1:
                         continue
-                    det_mask = masks[i].astype(bool) if masks is not None else None
-                    outline = _mask_outline(det_mask) if det_mask is not None else None
-                    if outline is None:
-                        outline = xywh2xyxypoly(
-                            np.array([[x1, y1, x2 - x1, y2 - y1]])
-                        ).reshape(4, 2).tolist()
-                    # Touching bubbles arrive as one instance; two closed
-                    # parts read as separate bubbles with a chord between
-                    # them and give layout one outline per bubble.
-                    split_parts = _split_two_lobed(outline)
-                    if split_parts is not None:
-                        bubble_outlines.extend(split_parts)
-                    else:
-                        bubble_outlines.append(outline)
+                    bubble_candidates.append({
+                        'box': [int(x1), int(y1), int(x2), int(y2)],
+                        'conf': float(conf),
+                        'mask': masks[i].astype(bool) if masks is not None else None,
+                    })
                     continue
                 if cls_id not in class_thresholds or conf < class_thresholds[cls_id]:
                     continue
@@ -449,6 +478,22 @@ class KoharuLayoutDetector(TextDetectorBase):
                 x2, y2 = min(x2 + ksize, im_w), min(y2 + ksize, im_h)
                 pts = xywh2xyxypoly(np.array([[x1, y1, x2 - x1, y2 - y1]])).reshape(4, 2).tolist()
                 detected_items.append({'pts': pts, 'label': CLASS_NAMES[cls_id]})
+
+        for cand in _selected_bubble_instances(bubble_candidates, bubble_threshold):
+            x1, y1, x2, y2 = cand['box']
+            outline = _mask_outline(cand['mask']) if cand['mask'] is not None else None
+            if outline is None:
+                outline = xywh2xyxypoly(
+                    np.array([[x1, y1, x2 - x1, y2 - y1]])
+                ).reshape(4, 2).tolist()
+            # Touching bubbles arrive as one instance; two closed parts read
+            # as separate bubbles with a chord between them and give layout
+            # one outline per bubble.
+            split_parts = _split_two_lobed(outline)
+            if split_parts is not None:
+                bubble_outlines.extend(split_parts)
+            else:
+                bubble_outlines.append(outline)
 
         if page is not None:
             # The bubble head emits stacked instances of one balloon at

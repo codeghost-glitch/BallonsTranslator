@@ -36,7 +36,10 @@ contract.
 ## Enable
 
 Detector params → Labels → `bubble` checkbox (default off) plus
-Bubble Threshold (model-card default 0.5).
+Bubble Threshold (model-card default 0.5). A bubble scoring below the
+threshold still gets an outline when the detector stacks nested
+instances of the same balloon (consistent complex shapes); a lone weak
+instance stays rejected, and nested duplicates collapse to one outline.
 
 ## Verification
 
