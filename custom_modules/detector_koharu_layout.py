@@ -203,66 +203,38 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
     return [best[1].astype(int).tolist(), best[2].astype(int).tolist()]
 
 
-def _seg_in_rect(a, b, x1, y1, x2, y2):
-    """Clip segment ab to an axis-aligned rect (Liang-Barsky).
-
-    Returns the in-rect sub-segment endpoints, or None when the segment
-    misses the rect.
-
-    >>> p0, p1 = _seg_in_rect((0, 20), (100, 20), 10, 10, 90, 30)
-    >>> abs(p0[0] - 10) < 1e-9 and abs(p1[0] - 90) < 1e-9
-    True
-    >>> _seg_in_rect((0, 0), (5, 5), 10, 10, 90, 50) is None
-    True
-    """
-    ax, ay = float(a[0]), float(a[1])
-    dx, dy = float(b[0]) - ax, float(b[1]) - ay
-    t0, t1 = 0.0, 1.0
-    for p, q in ((-dx, ax - x1), (dx, x2 - ax), (-dy, ay - y1), (dy, y2 - ay)):
-        if p == 0.0:
-            if q < 0:
-                return None
-            continue
-        r = q / p
-        if p < 0:
-            if r > t1:
-                return None
-            t0 = max(t0, r)
-        else:
-            if r < t0:
-                return None
-            t1 = min(t1, r)
-    if t0 >= t1:
-        return None
-    return (ax + dx * t0, ay + dy * t0), (ax + dx * t1, ay + dy * t1)
-
-
 def _cut_rect(x1, y1, x2, y2, a, b):
     """Split an axis-aligned box across the seam line through points a, b.
 
     Returns two xywh halves (split along the seam's dominant axis), or None
     when the seam misses the box, grazes a corner, or would leave a sliver.
+    A seam shorter than the box along the cut axis cannot center a cut, so
+    the midline must fall between the seam's own endpoints.
 
     >>> halves = _cut_rect(10, 10, 90, 50, (50, 0), (50, 60))
     >>> [[int(v) for v in h] for h in halves]
     [[10, 10, 40, 40], [50, 10, 40, 40]]
     >>> _cut_rect(10, 10, 90, 50, (0, 0), (5, 5)) is None
     True
+    >>> _cut_rect(10, 10, 90, 50, (50, 0), (50, 12)) is None
+    True
     """
-    clipped = _seg_in_rect(a, b, x1, y1, x2, y2)
-    if clipped is None:
-        return None
-    p0, p1 = clipped
-    if np.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 20:
-        return None
-    dx, dy = float(b[0]) - float(a[0]), float(b[1]) - float(a[1])
+    ax, ay = float(a[0]), float(a[1])
+    dx, dy = float(b[0]) - ax, float(b[1]) - ay
     if abs(dy) >= abs(dx):
-        # Near-vertical seam: cut x at the box's vertical middle.
-        cut = float(a[0]) + dx * (((y1 + y2) / 2 - float(a[1])) / dy)
+        # Near-vertical seam: cut x at the box's vertical middle, but only
+        # when the seam actually spans that height.
+        mid_y = (y1 + y2) / 2
+        if not min(ay, ay + dy) <= mid_y <= max(ay, ay + dy) or dy == 0:
+            return None
+        cut = ax + dx * ((mid_y - ay) / dy)
         if not (x1 + 6 < cut < x2 - 6):
             return None
         return ([x1, y1, cut - x1, y2 - y1], [cut, y1, x2 - cut, y2 - y1])
-    cut = float(a[1]) + dy * (((x1 + x2) / 2 - float(a[0])) / dx)
+    mid_x = (x1 + x2) / 2
+    if not min(ax, ax + dx) <= mid_x <= max(ax, ax + dx) or dx == 0:
+        return None
+    cut = ay + dy * ((mid_x - ax) / dx)
     if not (y1 + 6 < cut < y2 - 6):
         return None
     return ([x1, y1, x2 - x1, cut - y1], [x1, cut, x2 - x1, y2 - cut])
@@ -299,9 +271,7 @@ def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int) -> Lis
             arr = np.asarray(part, np.float32)
             centroid = arr.mean(axis=0)
             side = d[0] * (centroid[1] - a[1]) - d[1] * (centroid[0] - a[0])
-            mask = np.zeros((im_h, im_w), np.uint8)
-            cv2.fillPoly(mask, [arr.astype(np.int32)], 1)
-            sides.append((side, mask))
+            sides.append((side, arr))
         prepared.append((a, b, d, sides))
     out = []
     for blk in blk_list:
@@ -318,16 +288,14 @@ def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int) -> Lis
                 for hx, hy, hw, hh in halves:
                     cx, cy = hx + hw / 2, hy + hh / 2
                     side = d[0] * (cy - a[1]) - d[1] * (cx - a[0])
-                    part_mask = next(
-                        (m for s, m in sides if s * side > 0), None
-                    )
-                    if part_mask is None:
-                        kept = None
-                        break
-                    overlap = int(np.count_nonzero(
-                        part_mask[int(hy):int(hy + hh), int(hx):int(hx + hw)]
-                    ))
-                    if overlap < 100:
+                    own = next((arr for s, arr in sides if s * side > 0), None)
+                    # A half kept only by a sliver of overlap would mint an
+                    # empty block; require a corner of the half inside its
+                    # own bubble.
+                    if own is None or not any(
+                        cv2.pointPolygonTest(own, (float(px), float(py)), False) >= 0
+                        for px, py in ((hx, hy), (hx + hw, hy), (hx, hy + hh), (hx + hw, hy + hh))
+                    ):
                         kept = None
                         break
                     kept.append((hx, hy, hw, hh))
