@@ -165,12 +165,29 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
                 continue
             part1 = pts[i:j + 1]
             part2 = np.vstack([pts[j:], pts[:i + 1]])
-            if abs(cv2.contourArea(part1)) < total * 0.2:
+            # Tiny stacked bubbles can be a few percent of the joined area
+            # (a small bubble under a big one); the reflex-pair and chord
+            # gates keep plain bubbles from shedding noise bumps, so only the
+            # minority floor needs to stay low.
+            min_part = 250.0
+            area1 = abs(cv2.contourArea(part1))
+            area2 = abs(cv2.contourArea(part2))
+            if area1 < min_part or area2 < min_part:
                 continue
-            if abs(cv2.contourArea(part2)) < total * 0.2:
+            minority = part1 if area1 <= area2 else part2
+            marr = np.asarray(minority, np.float32)
+            _, _, mw, mh = cv2.boundingRect(marr)
+            # A real small bubble fills its box; a crescent shaved off a
+            # noise dent does not (measured 0.17-0.28 vs 0.4+ for blobs).
+            compact = min(area1, area2) / max(mw * mh, 1)
+            if compact < 0.35:
                 continue
-            if best is None or chord < best[0]:
-                best = (chord, part1, part2)
+            # Prefer the cut freeing the roundest lobe: a true neck frees a
+            # blob (0.4-0.9), noise dents free flatter pieces, and ranking by
+            # chord length lets a tiny dent win over the real neck.
+            key = (compact, -chord)
+            if best is None or key > best[0]:
+                best = (key, part1, part2)
     if best is None:
         return None
     return [best[1].astype(int).tolist(), best[2].astype(int).tolist()]
@@ -498,14 +515,7 @@ class KoharuLayoutDetector(TextDetectorBase):
                 outline = xywh2xyxypoly(
                     np.array([[x1, y1, x2 - x1, y2 - y1]])
                 ).reshape(4, 2).tolist()
-            # Touching bubbles arrive as one instance; two closed parts read
-            # as separate bubbles with a chord between them and give layout
-            # one outline per bubble.
-            split_parts = _split_two_lobed(outline)
-            if split_parts is not None:
-                bubble_outlines.extend(split_parts)
-            else:
-                bubble_outlines.append(outline)
+            bubble_outlines.append(outline)
 
         if page is not None:
             # The bubble head emits stacked instances of one balloon at
@@ -515,7 +525,19 @@ class KoharuLayoutDetector(TextDetectorBase):
             deduped = _drop_contained_detections(
                 [{'pts': poly} for poly in bubble_outlines]
             )
-            bubble_outlines = [item['pts'] for item in deduped]
+            # Touching bubbles arrive as one instance; two closed parts read
+            # as separate bubbles with a chord between them and give layout
+            # one outline per bubble. Split after dedup: split sisters overlap
+            # enough (small lobe inside the big one's box) to look contained,
+            # and a nested duplicate instance must collapse before both copies
+            # split into the same pair.
+            bubble_outlines = []
+            for item in deduped:
+                split_parts = _split_two_lobed(item['pts'])
+                if split_parts is not None:
+                    bubble_outlines.extend(split_parts)
+                else:
+                    bubble_outlines.append(item['pts'])
             proj.set_bubble_outlines(page, bubble_outlines)
 
         blk_list = []
