@@ -451,6 +451,14 @@ class KoharuLayoutDetector(TextDetectorBase):
                 detected_items.append({'pts': pts, 'label': CLASS_NAMES[cls_id]})
 
         if page is not None:
+            # The bubble head emits stacked instances of one balloon at
+            # lower thresholds (complex shapes score below the model-card
+            # value); collapse nested duplicates so lowering the threshold
+            # cannot stack outlines on top of each other.
+            deduped = _drop_contained_detections(
+                [{'pts': poly} for poly in bubble_outlines]
+            )
+            bubble_outlines = [item['pts'] for item in deduped]
             proj.set_bubble_outlines(page, bubble_outlines)
 
         blk_list = []
