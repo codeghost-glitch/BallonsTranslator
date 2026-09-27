@@ -79,6 +79,33 @@ def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_leng
         else:
             return False
 
+def _hyphen_head_for_line(
+    line: Line, word: str, hyphenator, measure, delimiter_len,
+    line_no: int, max_width, words_length, srcline_wlist, line_height,
+    ref_src_lines, ellipse,
+):
+    """Widest pyphen head that still grows this line legally.
+
+    Returns (head, head_width, tail, tail_width) or None when no split
+    fits or the word has no hyphen points.
+    """
+    if hyphenator is None or measure is None:
+        return None
+    best = None
+    for p in hyphenator.positions(word):
+        if p <= 0 or p >= len(word):
+            continue
+        head = word[:p] + '-'
+        hw = measure(head)
+        if line_is_valid(line, line.length + hw + delimiter_len, delimiter_len,
+                         max_width, words_length, srcline_wlist, line_no,
+                         line_height, ref_src_lines, ellipse):
+            best = (head, hw, word[p:], measure(word[p:]))
+        elif best is not None:
+            break  # positions ascend: later heads are only wider
+    return best
+
+
 def layout_lines_aligncenter(
     blk: TextBlock,
     mask: np.ndarray, 
@@ -94,7 +121,9 @@ def layout_lines_aligncenter(
     ref_src_lines = False,
     srcline_wlist=None,
     start_from_top=False,
-    ellipse=None
+    ellipse=None,
+    hyphenator=None,
+    measure=None
 )->List[Line]:
     
     lh_pad = 0
@@ -177,6 +206,33 @@ def layout_lines_aligncenter(
         if ref_src_lines and not line_valid and len(srcline_wlist) == 1:
             if new_len < max_central_width:
                 line_valid = True
+        if hyphenator is not None and measure is not None and new_len > max_central_width:
+            # Optical fill of the widest line: put the pending word's
+            # hyphen-fitting head here and queue the tail for the half
+            # lines instead of leaving a word-shaped gap.
+            pend_list = wlst_left if insert_left else wlst_right
+            pend_lens = len_left if insert_left else len_right
+            pend_idx = -1 if insert_left else 0
+            if pend_list:
+                split = _hyphen_head_for_line(
+                    central_line, pend_list[pend_idx], hyphenator, measure,
+                    delimiter_len, -1, max_central_width, words_length,
+                    srcline_wlist, line_height, ref_src_lines, ellipse)
+                if split is not None:
+                    head, hw, tail, tw = split
+                    h_len = central_line.length + hw + delimiter_len
+                    old_pend = pend_lens[pend_idx]
+                    pend_list[pend_idx] = tail
+                    pend_lens[pend_idx] = tw
+                    if insert_left:
+                        central_line.append_left(head, hw + delimiter_len, delimiter)
+                        central_line.pos_x = centroid_x - h_len // 2
+                        sum_left += tw - old_pend
+                    else:
+                        central_line.append_right(head, hw + delimiter_len, delimiter)
+                        central_line.pos_x = centroid_x - h_len // 2 - line_height // 2
+                        sum_right += tw - old_pend
+                    continue
         if not line_valid:
             break
 
@@ -250,16 +306,29 @@ def layout_lines_aligncenter(
             else:
                 line_valid = True
             if line_valid:
-                line.append_right(w, wl+delimiter_len, delimiter)
-                line.pos_x = new_x
-                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines, ellipse=ellipse)
-                if not line_valid:
-                    if sum_right > 0:
-                        w, wl = wlst_right.pop(0), len_right.pop(0)
-                        sum_right -= wl
-                    else:
-                        line.strip_spacing()
-                        break
+                # Optical fill: when the full word breaks the width budget,
+                # close this line with its hyphen-fitting head and wrap the
+                # tail instead of leaving a ragged gap.
+                if hyphenator is not None and measure is not None and new_len > max_central_width:
+                    split = _hyphen_head_for_line(line, w, hyphenator, measure, delimiter_len, line_right_no, max_central_width, words_length, srcline_wlist, line_height, ref_src_lines, ellipse)
+                    if split is not None:
+                        head, hw, tail, tw = split
+                        h_len = line.length + hw + delimiter_len
+                        line.append_right(head, hw + delimiter_len, delimiter)
+                        line.pos_x = centroid_x - h_len // 2 - line_height // 2
+                        w, wl = tail, tw
+                        line_valid = False
+                if line_valid:
+                    line.append_right(w, wl+delimiter_len, delimiter)
+                    line.pos_x = new_x
+                    line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines, ellipse=ellipse)
+                    if not line_valid:
+                        if sum_right > 0:
+                            w, wl = wlst_right.pop(0), len_right.pop(0)
+                            sum_right -= wl
+                        else:
+                            line.strip_spacing()
+                            break
 
             if not line_valid:
                 pos_x = centroid_x - wl // 2
@@ -297,16 +366,26 @@ def layout_lines_aligncenter(
             else:
                 line_valid = True
             if line_valid:
-                line.append_left(w, wl+delimiter_len, delimiter)
-                line.pos_x = new_x
-                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, ellipse=ellipse)
-                if not line_valid:
-                    if sum_left > 0:
-                        w, wl = wlst_left.pop(-1), len_left.pop(-1)
-                        sum_left -= wl
-                    else:
-                        line.strip_spacing()
-                        break
+                if hyphenator is not None and measure is not None and new_len > max_central_width:
+                    split = _hyphen_head_for_line(line, w, hyphenator, measure, delimiter_len, line_left_no, max_central_width, words_length, srcline_wlist, line_height, ref_src_lines, ellipse)
+                    if split is not None:
+                        head, hw, tail, tw = split
+                        h_len = line.length + hw + delimiter_len
+                        line.append_left(head, hw + delimiter_len, delimiter)
+                        line.pos_x = centroid_x - h_len // 2 - line_height // 2
+                        w, wl = tail, tw
+                        line_valid = False
+                if line_valid:
+                    line.append_left(w, wl+delimiter_len, delimiter)
+                    line.pos_x = new_x
+                    line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, ellipse=ellipse)
+                    if not line_valid:
+                        if sum_left > 0:
+                            w, wl = wlst_left.pop(-1), len_left.pop(-1)
+                            sum_left -= wl
+                        else:
+                            line.strip_spacing()
+                            break
 
             if not line_valid :
                 pos_x = centroid_x - wl // 2
@@ -334,6 +413,8 @@ def layout_lines_alignside(
     ref_src_lines = False,
     srcline_wlist=None,
     ellipse=None,
+    hyphenator=None,
+    measure=None,
 )->List[Line]:
 
     align_right = blk.fontformat.alignment == TextAlignment.Right
@@ -376,6 +457,13 @@ def layout_lines_alignside(
                         line_valid = True
             if line_valid:
                 line_valid = line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines, ellipse=ellipse)
+                if hyphenator is not None and measure is not None and new_len > max_width:
+                    split = _hyphen_head_for_line(line, w, hyphenator, measure, delimiter_len, line_id, max_width, words_length, srcline_wlist, line_height, ref_src_lines, ellipse)
+                    if split is not None:
+                        head, hw, tail, tw = split
+                        line.append_right(head, hw + delimiter_len, delimiter)
+                        w, wl = tail, tw
+                        line_valid = False
             if line_valid:
                 line.append_right(w, wl+delimiter_len, delimiter)
             else:
@@ -403,7 +491,9 @@ def layout_text(
     src_is_cjk=False,
     tgt_is_cjk=False,
     ref_src_lines = False,
-    ellipse=None
+    ellipse=None,
+    hyphenator=None,
+    measure=None
 ) -> Tuple[str, List]:
 
     angle = blk.angle
@@ -471,10 +561,12 @@ def layout_text(
     if alignment == TextAlignment.Center:
         lines, adjust_xy = layout_lines_aligncenter(blk, mask, words, centroid, wl_list, delimiter_len, line_height, spacing, delimiter, 
                                          max_central_width, ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist,
-                                         start_from_top=start_from_top, ellipse=ellipse)
+                                         start_from_top=start_from_top, ellipse=ellipse,
+                                         hyphenator=hyphenator, measure=measure)
     else:
         lines, adjust_xy = layout_lines_alignside(blk, mask, words, centroid, wl_list, delimiter_len, line_height, spacing, delimiter, False, max_central_width, 
-                                       ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist, ellipse=ellipse)
+                                       ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist, ellipse=ellipse,
+                                       hyphenator=hyphenator, measure=measure)
     
     concated_text = []
     pos_x_lst, pos_right_lst = [], []

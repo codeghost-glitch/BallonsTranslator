@@ -1027,15 +1027,14 @@ class SceneTextManager(QObject):
                     # A polygon holding several blocks is a joined
                     # multi-bubble; its window band keeps each block near
                     # its own text instead of re-centering both on the seam.
-                    bubble_arr = np.asarray(bubble, np.float32)
+                    # Holders = blocks whose deepest containment IS this
+                    # polygon: merely touching an overlapping neighbour must
+                    # not demote a single-owner outline to the clipped band.
                     page_blocks = getattr(self.imgtrans_proj, 'pages', None) or {}
                     page_blocks = page_blocks.get(self.imgtrans_proj.current_img, [])
                     holders = sum(
                         1 for other in page_blocks
-                        if any(
-                            cv2.pointPolygonTest(bubble_arr, (float(x), float(y)), False) >= 0
-                            for x, y in _attribution_points(other)
-                        )
+                        if _bubble_polygon_for(self.imgtrans_proj, other) == bubble
                     )
                     if holders <= 1:
                         bx, by, bw, bh = cv2.boundingRect(np.asarray(bubble, np.int32))
@@ -1105,6 +1104,21 @@ class SceneTextManager(QObject):
             line_height = int(line_height * resize_ratio)
             text_w = int(text_w * resize_ratio)
             delimiter_len = int(delimiter_len * resize_ratio)
+
+        # Optical line-end hyphenation for Latin scripts: the wrap loops
+        # close a line with a word's hyphen-fitting head when the whole
+        # word would break the budget. CJK scripts never hyphenate.
+        hyphenator = None
+        hyphen_measure = None
+        if not tgt_is_cjk:
+            try:
+                import pyphen
+                hyphenator = pyphen.Pyphen(
+                    lang=pyphen.language_fallback(pcfg.module.translate_target or 'en')
+                )
+                hyphen_measure = lambda s: text_size_func(s)[0]
+            except Exception:
+                hyphenator = None
 
         # Latin-script hyphenation: after the font settles, split tokens that
         # still exceed the line budget at linguistic points. CJK scripts wrap
@@ -1200,7 +1214,9 @@ class SceneTextManager(QObject):
                 src_is_cjk=src_is_cjk,
                 tgt_is_cjk=tgt_is_cjk,
                 ref_src_lines=ref_src_lines,
-                ellipse=ellipse
+                ellipse=ellipse,
+                hyphenator=hyphenator,
+                measure=hyphen_measure
             )
             if not check_fit:
                 break

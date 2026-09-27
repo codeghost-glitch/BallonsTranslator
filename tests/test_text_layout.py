@@ -72,3 +72,51 @@ class TestEllipseLineBudget(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestOpticalHyphenation(unittest.TestCase):
+
+    def test_line_end_hyphen_fills_narrow_budget(self) -> None:
+        if not HAS_PYPHEN:
+            self.skipTest('pyphen not installed')
+        import numpy as np
+        from ballontranslator.utils.textblock import TextBlock
+        from ballontranslator.utils.text_layout import layout_text
+
+        measure = lambda s: len(s) * 10
+        blk = TextBlock(xyxy=[0, 0, 100, 40])
+        blk.set_lines_by_xywh([0, 0, 100, 40])
+        mask = np.full((120, 300), 255, np.uint8)
+        words = ['malls', 'evacuating', 'shopping']
+        wl = [measure(w) for w in words]
+        hyphenator = __import__('pyphen').Pyphen(lang='en')
+        text, xywh, _, _ = layout_text(
+            blk, mask, [0, 0, 300, 120], [10, 60],
+            list(words), list(wl), ' ', measure(' '), 30,
+            max_central_width=120, src_is_cjk=False, tgt_is_cjk=False,
+            hyphenator=hyphenator, measure=measure,
+        )
+        lines = text.split('\n')
+        self.assertTrue(any(ln.endswith('-') for ln in lines), text)
+        # nothing lost: stripping the added hyphens rejoins the input
+        rejoined = ''.join(ln[:-1] if ln.endswith('-') else ln for ln in lines)
+        rejoined = rejoined.replace(' ', '')
+        self.assertEqual(rejoined, ''.join(words))
+
+    def test_hyphenation_off_without_hyphenator(self) -> None:
+        import numpy as np
+        from ballontranslator.utils.textblock import TextBlock
+        from ballontranslator.utils.text_layout import layout_text
+
+        measure = lambda s: len(s) * 10
+        blk = TextBlock(xyxy=[0, 0, 100, 40])
+        blk.set_lines_by_xywh([0, 0, 100, 40])
+        mask = np.full((120, 300), 255, np.uint8)
+        words = ['malls', 'evacuating', 'shopping']
+        wl = [measure(w) for w in words]
+        text, _, _, _ = layout_text(
+            blk, mask, [0, 0, 300, 120], [10, 60],
+            list(words), list(wl), ' ', measure(' '), 30,
+            max_central_width=120, src_is_cjk=False, tgt_is_cjk=False,
+        )
+        self.assertNotIn('-', text.replace(' ', ''))
