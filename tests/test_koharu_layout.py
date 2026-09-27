@@ -108,3 +108,25 @@ def test_stray_mask_fragment_does_not_stretch_block_box():
 
     assert _nearby_mask_extent(np.zeros((4, 4), bool), (0, 0, 2, 2)) is None
     assert _nearby_mask_extent(None, box) is None
+
+
+def test_split_two_lobed_separates_joined_bubbles():
+    from custom_modules.detector_koharu_layout import _split_two_lobed
+
+    a = cv2.ellipse2Poly((30, 40), (30, 30), 0, 0, 360, 30)
+    b = cv2.ellipse2Poly((70, 40), (30, 30), 0, 0, 360, 30)
+    mask = np.zeros((80, 110), np.uint8)
+    cv2.fillPoly(mask, [a, b], 255)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    joined = contours[0].reshape(-1, 2).tolist()
+
+    parts = _split_two_lobed(joined)
+    assert parts is not None and len(parts) == 2
+    total = abs(cv2.contourArea(np.asarray(joined, np.float32)))
+    area_sum = sum(abs(cv2.contourArea(np.asarray(p, np.float32))) for p in parts)
+    assert abs(area_sum - total) < total * 0.05  # chord has no area: exact partition
+    # both parts sit over their own lobe, not the union center
+    xs = [int(np.asarray(p)[:, 0].mean()) for p in parts]
+    assert min(xs) < 55 < max(xs)
+    # a single bubble never splits
+    assert _split_two_lobed(a.reshape(-1, 2).tolist()) is None

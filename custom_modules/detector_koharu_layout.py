@@ -56,6 +56,71 @@ def _mask_outline(det_mask: np.ndarray) -> Optional[List]:
     return approx.tolist()
 
 
+def _split_two_lobed(outline: List) -> Optional[List[List]]:
+    """Cut a joined two-bubble contour at its neck into two closed polygons.
+
+    Touching bubbles merge into one detector instance; cutting the contour
+    between its two reflex neck vertices gives one polygon per bubble, each
+    closed by the straight chord - the separating line drawn on the canvas.
+    Single bubbles (no reflex pair) and shapes without one bubble-sized cut
+    stay intact.
+
+    >>> import cv2
+    >>> a = cv2.ellipse2Poly((30, 40), (30, 30), 0, 0, 360, 30)
+    >>> b = cv2.ellipse2Poly((70, 40), (30, 30), 0, 0, 360, 30)
+    >>> m = np.zeros((80, 110), np.uint8)
+    >>> _ = cv2.fillPoly(m, [a, b], 255)
+    >>> cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    >>> parts = _split_two_lobed(cnts[0].reshape(-1, 2).tolist())
+    >>> len(parts)
+    2
+    >>> _split_two_lobed(a.reshape(-1, 2).tolist()) is None
+    True
+    """
+    pts = np.asarray(outline, np.float32)
+    n = len(pts)
+    if n < 6:
+        return None
+    total = abs(cv2.contourArea(pts))
+    if total < 1:
+        return None
+    # Orientation sign: for a CCW contour a convex vertex turns positive.
+    x, y = pts[:, 0], pts[:, 1]
+    orient = float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+    if orient == 0:
+        return None
+    reflex = []
+    for k in range(n):
+        a, b, c = pts[k - 1], pts[k], pts[(k + 1) % n]
+        cross = float((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
+        reflex.append(cross * orient < 0)
+    limit = 0.7 * float(np.sqrt(total))
+    best = None
+    for i in range(n - 2):
+        if not reflex[i]:
+            continue
+        for j in range(i + 2, n):
+            if not reflex[j] or (i == 0 and j == n - 1):
+                continue
+            a, b = pts[i], pts[j]
+            chord = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+            if chord > limit:
+                continue
+            if cv2.pointPolygonTest(pts, (float((a[0] + b[0]) / 2), float((a[1] + b[1]) / 2)), False) < 0:
+                continue
+            part1 = pts[i:j + 1]
+            part2 = np.vstack([pts[j:], pts[:i + 1]])
+            if abs(cv2.contourArea(part1)) < total * 0.2:
+                continue
+            if abs(cv2.contourArea(part2)) < total * 0.2:
+                continue
+            if best is None or chord < best[0]:
+                best = (chord, part1, part2)
+    if best is None:
+        return None
+    return [best[1].astype(int).tolist(), best[2].astype(int).tolist()]
+
+
 def _drop_contained_detections(items: List[dict]) -> List[dict]:
     """Drop the smaller of two boxes when one mostly sits inside the other.
 
@@ -344,7 +409,14 @@ class KoharuLayoutDetector(TextDetectorBase):
                         outline = xywh2xyxypoly(
                             np.array([[x1, y1, x2 - x1, y2 - y1]])
                         ).reshape(4, 2).tolist()
-                    bubble_outlines.append(outline)
+                    # Touching bubbles arrive as one instance; two closed
+                    # parts read as separate bubbles with a chord between
+                    # them and give layout one outline per bubble.
+                    split_parts = _split_two_lobed(outline)
+                    if split_parts is not None:
+                        bubble_outlines.extend(split_parts)
+                    else:
+                        bubble_outlines.append(outline)
                     continue
                 if cls_id not in class_thresholds or conf < class_thresholds[cls_id]:
                     continue
