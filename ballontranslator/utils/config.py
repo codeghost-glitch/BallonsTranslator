@@ -398,6 +398,7 @@ class ProgramConfig(Config):
     let_family_flag: int = 0
     let_autolayout_flag: bool = True
     let_elliptic_layout: bool = True
+    auto_light_text_on_dark: bool = True
     let_letter_case: str = OCRTextPostprocess.NONE
     let_show_only_custom_fonts_flag: bool = False
     let_textstyle_indep_flag: bool = False

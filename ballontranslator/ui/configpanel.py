@@ -1107,6 +1107,14 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         )
         self.let_elliptic_checker.stateChanged.connect(self.on_elliptic_changed)
 
+        self.auto_light_text_checker, _ = typesettingConfigPanel.addCheckBox(
+            self.tr('Auto white text on dark backgrounds'),
+            discription=self.tr(
+                'Render text white when the block area is mostly dark.',
+            ),
+        )
+        self.auto_light_text_checker.stateChanged.connect(self.on_auto_light_text_changed)
+
         self.let_textstyle_indep_checker, _ = typesettingConfigPanel.addCheckBox(self.tr('Independent text styles for each projects'))
         self.let_textstyle_indep_checker.stateChanged.connect(self.on_textstyle_indep_changed)
 
@@ -1637,6 +1645,9 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
     def on_elliptic_changed(self):
         pcfg.let_elliptic_layout = self.let_elliptic_checker.isChecked()
 
+    def on_auto_light_text_changed(self):
+        pcfg.auto_light_text_on_dark = self.auto_light_text_checker.isChecked()
+
     def on_quick_insert_characters_changed(self, text: str) -> None:
         pcfg.quick_insert_characters = text
 
@@ -1862,6 +1873,7 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         self.let_writing_mode_combox.setCurrentIndex(pcfg.let_writing_mode_flag)
         self.let_autolayout_checker.setChecked(pcfg.let_autolayout_flag)
         self.let_elliptic_checker.setChecked(pcfg.let_elliptic_layout)
+        self.auto_light_text_checker.setChecked(pcfg.auto_light_text_on_dark)
         self.quick_insert_characters_edit.setText(pcfg.quick_insert_characters)
         self.let_letter_case_buttons[pcfg.let_letter_case].setChecked(True)
         self.compact_vertical_punctuation_checker.setChecked(

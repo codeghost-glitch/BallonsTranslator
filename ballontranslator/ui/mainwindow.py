@@ -13,6 +13,7 @@ from qtpy.QtGui import QContextMenuEvent, QTextCursor, QGuiApplication, QIcon, Q
 
 from ballontranslator.utils.logger import logger as LOGGER
 from ballontranslator.utils.text_processing import is_cjk
+from ballontranslator.utils.imgproc_utils import light_text_on_dark
 from ballontranslator.utils.textblock import TextBlock, TextAlignment
 from ballontranslator.utils.text_effects import (
     SolidPaint,
@@ -1966,6 +1967,7 @@ class MainWindow(mainwindow_cls):
             enable_detect or enable_ocr or enable_translate
         )
         
+        page_img = None
         if not inpaint_only:
             for ii, blk in enumerate(blk_list):
                 if self._run_imgtrans_wo_textstyle_update and ffmt_list is not None:
@@ -1989,6 +1991,15 @@ class MainWindow(mainwindow_cls):
                         )
                     elif enable_ocr:
                         blk.recalulate_stroke_width()
+                    if pcfg.auto_light_text_on_dark and not override_fnt_color:
+                        # White text where the block sits on dark art; the
+                        # global-color override below wins when requested.
+                        if page_img is None:
+                            page_img = self.imgtrans_proj.read_img(
+                                list(self.imgtrans_proj.pages)[page_index]
+                            )
+                        if light_text_on_dark(page_img, blk.xyxy):
+                            blk.set_font_colors(fg_colors=(255, 255, 255))
                     if override_fnt_color:
                         blk.set_font_colors(fg_colors=gf.frgb)
                     if override_fnt_scolor:

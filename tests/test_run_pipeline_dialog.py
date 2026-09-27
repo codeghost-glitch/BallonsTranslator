@@ -6,6 +6,8 @@ import threading
 import unittest
 import weakref
 from types import SimpleNamespace
+
+import numpy as np
 from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -1529,6 +1531,8 @@ class RunPipelineDialogTests(unittest.TestCase):
             get_blklist_byidx=lambda _: blocks,
             set_current_img_byidx=lambda _: None,
             save=lambda: None,
+            pages={'001.png': []},
+            read_img=lambda _: np.zeros((64, 64, 3), np.uint8),
         )
         owner = SimpleNamespace(
             imgtrans_proj=project,
@@ -1623,6 +1627,8 @@ class RunPipelineDialogTests(unittest.TestCase):
             get_blklist_byidx=lambda _: blocks,
             set_current_img_byidx=lambda _: None,
             save=lambda: None,
+            pages={'001.png': []},
+            read_img=lambda _: np.zeros((64, 64, 3), np.uint8),
         )
         owner = SimpleNamespace(
             imgtrans_proj=project,
@@ -1874,6 +1880,8 @@ class RunPipelineDialogTests(unittest.TestCase):
             get_blklist_byidx=lambda _: blocks,
             set_current_img_byidx=lambda _: None,
             save=lambda: None,
+            pages={'001.png': []},
+            read_img=lambda _: np.zeros((64, 64, 3), np.uint8),
         )
         owner = SimpleNamespace(
             imgtrans_proj=project,
@@ -1967,6 +1975,8 @@ class RunPipelineDialogTests(unittest.TestCase):
             get_blklist_byidx=lambda _: blocks,
             set_current_img_byidx=lambda _: None,
             save=lambda: None,
+            pages={'001.png': []},
+            read_img=lambda _: np.zeros((64, 64, 3), np.uint8),
         )
         owner = SimpleNamespace(
             imgtrans_proj=project,

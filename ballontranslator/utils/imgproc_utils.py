@@ -253,6 +253,32 @@ def rotate_image(mat: np.ndarray, angle: float) -> np.ndarray:
     rotated_mat = cv2.warpAffine(mat, rotation_mat, (bound_w, bound_h))
     return rotated_mat
 
+def light_text_on_dark(img: np.ndarray, box: List, threshold: float = 110) -> bool:
+    """Whether the region behind a text block is mostly dark.
+
+    Sampled on the clamped block rectangle; ~29 mean gray for the black
+    balloons on a dark page vs ~170+ for ordinary light bubbles, so 110
+    separates them with margin.
+
+    >>> img = np.zeros((8, 8, 3), np.uint8)
+    >>> light_text_on_dark(img, [0, 0, 8, 8])
+    True
+    >>> img[:] = 255
+    >>> light_text_on_dark(img, [0, 0, 8, 8])
+    False
+    >>> light_text_on_dark(img, [6, 6, 20, 20])
+    False
+    """
+    h, w = img.shape[:2]
+    x1, y1 = max(int(box[0]), 0), max(int(box[1]), 0)
+    x2, y2 = min(int(box[2]), w), min(int(box[3]), h)
+    if x2 <= x1 or y2 <= y1:
+        return False
+    crop = img[y1:y2, x1:x2]
+    gray = crop.mean(axis=2) if crop.ndim == 3 else crop
+    return float(gray.mean()) < threshold
+
+
 def color_difference(rgb1: List, rgb2: List) -> float:
     # https://en.wikipedia.org/wiki/Color_difference#CIE76
     color1 = np.array(rgb1, dtype=np.uint8).reshape(1, 1, 3)
@@ -554,7 +580,7 @@ def magic_wand_preview_overlay(
 
     Example:
         >>> overlay, x, y = magic_wand_preview_overlay(np.array([[0, 255], [0, 0]], dtype=np.uint8))
-        >>> x, y, overlay[0, 0, 0], overlay[0, 0, 3]
+        >>> x, y, int(overlay[0, 0, 0]), int(overlay[0, 0, 3])
         (1, 0, 150, 96)
     """
     if mask is None or mask.size == 0 or int(mask.max()) == 0:
