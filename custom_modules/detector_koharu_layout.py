@@ -56,6 +56,59 @@ def _mask_outline(det_mask: np.ndarray) -> Optional[List]:
     return approx.tolist()
 
 
+def _drop_contained_detections(items: List[dict]) -> List[dict]:
+    """Drop the smaller of two boxes when one mostly sits inside the other.
+
+    rf-detr fires duplicate detections for a text run crossing a joined
+    bubble's seam (prefix/full/tail boxes of the same line); one text run
+    must become one block. Separate bubbles keep tens of px of gap, so their
+    boxes never reach the containment threshold.
+
+    >>> full = {'pts': [[629, 96], [819, 96], [819, 291], [629, 291]]}
+    >>> pre = {'pts': [[693, 102], [819, 102], [819, 294], [693, 294]]}
+    >>> tail = {'pts': [[628, 102], [680, 102], [680, 248], [628, 248]]}
+    >>> other = {'pts': [[394, 228], [580, 228], [580, 372], [394, 372]]}
+    >>> [it['pts'][0] for it in _drop_contained_detections([full, pre, tail, other])]
+    [[629, 96], [394, 228]]
+    """
+    if len(items) < 2:
+        return items
+    boxes = []
+    for it in items:
+        pts = np.asarray(it['pts'], np.float32)
+        boxes.append((
+            float(pts[:, 0].min()), float(pts[:, 1].min()),
+            float(pts[:, 0].max()), float(pts[:, 1].max()),
+        ))
+    dropped = [False] * len(items)
+    for i in range(len(items)):
+        if dropped[i]:
+            continue
+        ax0, ay0, ax1, ay1 = boxes[i]
+        area_i = (ax1 - ax0) * (ay1 - ay0)
+        for j in range(i + 1, len(items)):
+            if dropped[i] or dropped[j]:
+                continue
+            bx0, by0, bx1, by1 = boxes[j]
+            inter = (
+                max(0.0, min(ax1, bx1) - max(ax0, bx0))
+                * max(0.0, min(ay1, by1) - max(ay0, by0))
+            )
+            if inter <= 0:
+                continue
+            area_j = (bx1 - bx0) * (by1 - by0)
+            if inter / min(area_i, area_j) < 0.6:
+                continue
+            # Keep the larger box (the full text run), earlier on ties.
+            if area_j < area_i:
+                dropped[j] = True
+            elif area_i < area_j:
+                dropped[i] = True
+            else:
+                dropped[j] = True
+    return [it for k, it in enumerate(items) if not dropped[k]]
+
+
 def _nearby_mask_extent(
     det_mask: Optional[np.ndarray], box: Tuple[int, int, int, int]
 ) -> Optional[Tuple[int, int, int, int]]:
@@ -327,6 +380,9 @@ class KoharuLayoutDetector(TextDetectorBase):
         blk_list = []
         if not detected_items:
             return mask, blk_list
+        # One text run crossing a joined bubble's seam must stay one block;
+        # nested duplicate detections collapse to their largest box.
+        detected_items = _drop_contained_detections(detected_items)
         if self.get_param_value('merge text lines'):
             pts_only_list = [item['pts'] for item in detected_items]
             blk_list = mit_merge_textlines(pts_only_list, width=im_w, height=im_h)
