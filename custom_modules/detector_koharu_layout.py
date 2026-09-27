@@ -149,7 +149,10 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
         a, b, c = pts[k - 1], pts[k], pts[(k + 1) % n]
         cross = float((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
         reflex.append(cross * orient < 0)
-    limit = 0.7 * float(np.sqrt(total))
+    # Deeply-overlapped pairs need neck chords up to 0.77*sqrt(area) (the
+    # blk5 diamond pair); single balloons falsely cut at 0.85 (a dent-to-dent
+    # chord across a hexagon measured 0.846), so cap between the two.
+    limit = 0.82 * float(np.sqrt(total))
     best = None
     for i in range(n - 2):
         if not reflex[i]:
@@ -182,6 +185,13 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
             compact = min(area1, area2) / max(mw * mh, 1)
             if compact < 0.35:
                 continue
+            # A chord far wider than the lobe it frees slices a balloon
+            # between noise dents, not a neck (chord / sqrt(minority area)):
+            # the verified pairs measure <= 1.37, slices on unverified or
+            # false cuts 1.43+. Deterministic geometry keeps true cuts at
+            # their measured value across runs.
+            if chord > 1.4 * float(np.sqrt(min(area1, area2))):
+                continue
             # Prefer the cut freeing the roundest lobe: a true neck frees a
             # blob (0.4-0.9), noise dents free flatter pieces, and ranking by
             # chord length lets a tiny dent win over the real neck.
@@ -191,6 +201,150 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
     if best is None:
         return None
     return [best[1].astype(int).tolist(), best[2].astype(int).tolist()]
+
+
+def _seg_in_rect(a, b, x1, y1, x2, y2):
+    """Clip segment ab to an axis-aligned rect (Liang-Barsky).
+
+    Returns the in-rect sub-segment endpoints, or None when the segment
+    misses the rect.
+
+    >>> p0, p1 = _seg_in_rect((0, 20), (100, 20), 10, 10, 90, 30)
+    >>> abs(p0[0] - 10) < 1e-9 and abs(p1[0] - 90) < 1e-9
+    True
+    >>> _seg_in_rect((0, 0), (5, 5), 10, 10, 90, 50) is None
+    True
+    """
+    ax, ay = float(a[0]), float(a[1])
+    dx, dy = float(b[0]) - ax, float(b[1]) - ay
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, ax - x1), (dx, x2 - ax), (-dy, ay - y1), (dy, y2 - ay)):
+        if p == 0.0:
+            if q < 0:
+                return None
+            continue
+        r = q / p
+        if p < 0:
+            if r > t1:
+                return None
+            t0 = max(t0, r)
+        else:
+            if r < t0:
+                return None
+            t1 = min(t1, r)
+    if t0 >= t1:
+        return None
+    return (ax + dx * t0, ay + dy * t0), (ax + dx * t1, ay + dy * t1)
+
+
+def _cut_rect(x1, y1, x2, y2, a, b):
+    """Split an axis-aligned box across the seam line through points a, b.
+
+    Returns two xywh halves (split along the seam's dominant axis), or None
+    when the seam misses the box, grazes a corner, or would leave a sliver.
+
+    >>> halves = _cut_rect(10, 10, 90, 50, (50, 0), (50, 60))
+    >>> [[int(v) for v in h] for h in halves]
+    [[10, 10, 40, 40], [50, 10, 40, 40]]
+    >>> _cut_rect(10, 10, 90, 50, (0, 0), (5, 5)) is None
+    True
+    """
+    clipped = _seg_in_rect(a, b, x1, y1, x2, y2)
+    if clipped is None:
+        return None
+    p0, p1 = clipped
+    if np.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 20:
+        return None
+    dx, dy = float(b[0]) - float(a[0]), float(b[1]) - float(a[1])
+    if abs(dy) >= abs(dx):
+        # Near-vertical seam: cut x at the box's vertical middle.
+        cut = float(a[0]) + dx * (((y1 + y2) / 2 - float(a[1])) / dy)
+        if not (x1 + 6 < cut < x2 - 6):
+            return None
+        return ([x1, y1, cut - x1, y2 - y1], [cut, y1, x2 - cut, y2 - y1])
+    cut = float(a[1]) + dy * (((x1 + x2) / 2 - float(a[0])) / dx)
+    if not (y1 + 6 < cut < y2 - 6):
+        return None
+    return ([x1, y1, x2 - x1, cut - y1], [x1, cut, x2 - x1, y2 - cut])
+
+
+def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int) -> List:
+    """Cut blocks straddling a split pair's seam, one block per bubble.
+
+    Two joined bubbles each carry their own text, but the text head and the
+    line merger both treat the pair as one run. The seam chord runs between
+    the two texts, so cutting the block's box along the extended chord gives
+    each bubble its own block for OCR. A half whose box misses its own bubble
+    (slop into the neighbour) keeps the original block instead of minting an
+    empty one.
+
+    >>> class B:
+    ...     def __init__(self, x, y, w, h):
+    ...         self._b = (x, y, w, h); self.label = 'text'
+    ...     def bounding_rect(self): return self._b
+    >>> left = [[540, 1400], [630, 1400], [630, 1600], [540, 1600]]
+    >>> right = [[630, 1420], [690, 1420], [690, 1560], [630, 1560]]
+    >>> out = _seam_split_blocks([B(586, 1457, 77, 127)],
+    ...     [((627, 1447), (637, 1551), [left, right])], 1500, 2000)
+    >>> len(out), [list(b.bounding_rect()) for b in out]
+    (2, [[586, 1457, 48, 127], [634, 1457, 29, 127]])
+    """
+    if not seams:
+        return blk_list
+    prepared = []
+    for a, b, parts in seams:
+        d = (float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+        sides = []
+        for part in parts:
+            arr = np.asarray(part, np.float32)
+            centroid = arr.mean(axis=0)
+            side = d[0] * (centroid[1] - a[1]) - d[1] * (centroid[0] - a[0])
+            mask = np.zeros((im_h, im_w), np.uint8)
+            cv2.fillPoly(mask, [arr.astype(np.int32)], 1)
+            sides.append((side, mask))
+        prepared.append((a, b, d, sides))
+    out = []
+    for blk in blk_list:
+        boxes = [blk]
+        for a, b, d, sides in prepared:
+            next_boxes = []
+            for box in boxes:
+                x, y, w, h = box.bounding_rect()
+                halves = _cut_rect(float(x), float(y), float(x + w), float(y + h), a, b)
+                if halves is None:
+                    next_boxes.append(box)
+                    continue
+                kept = []
+                for hx, hy, hw, hh in halves:
+                    cx, cy = hx + hw / 2, hy + hh / 2
+                    side = d[0] * (cy - a[1]) - d[1] * (cx - a[0])
+                    part_mask = next(
+                        (m for s, m in sides if s * side > 0), None
+                    )
+                    if part_mask is None:
+                        kept = None
+                        break
+                    overlap = int(np.count_nonzero(
+                        part_mask[int(hy):int(hy + hh), int(hx):int(hx + hw)]
+                    ))
+                    if overlap < 100:
+                        kept = None
+                        break
+                    kept.append((hx, hy, hw, hh))
+                if kept is None:
+                    next_boxes.append(box)
+                    continue
+                for xywh in kept:
+                    pts = xywh2xyxypoly(np.array([xywh])).reshape(4, 2).tolist()
+                    pts_sorted, is_vertical = sort_pnts(pts)
+                    nb = TextBlock(lines=[pts_sorted], src_is_vertical=is_vertical, label=box.label)
+                    nb.vertical = is_vertical
+                    nb.adjust_bbox()
+                    examine_textblk(nb, im_w, im_h)
+                    next_boxes.append(nb)
+            boxes = next_boxes
+        out.extend(boxes)
+    return out
 
 
 def _drop_contained_detections(items: List[dict]) -> List[dict]:
@@ -444,6 +598,7 @@ class KoharuLayoutDetector(TextDetectorBase):
         if proj is not None:
             page = getattr(proj, 'detecting_page', None) or proj.current_img
         bubble_outlines = []
+        seams = []
         if page is not None:
             # Each detect run replaces the stored outlines, so disabling the
             # label clears stale ones.
@@ -536,6 +691,9 @@ class KoharuLayoutDetector(TextDetectorBase):
                 split_parts = _split_two_lobed(item['pts'])
                 if split_parts is not None:
                     bubble_outlines.extend(split_parts)
+                    # Chord endpoints plus both parts: a block spanning this
+                    # seam belongs to two bubbles and is cut per bubble below.
+                    seams.append((split_parts[0][0], split_parts[0][-1], split_parts))
                 else:
                     bubble_outlines.append(item['pts'])
             proj.set_bubble_outlines(page, bubble_outlines)
@@ -543,8 +701,7 @@ class KoharuLayoutDetector(TextDetectorBase):
         blk_list = []
         if not detected_items:
             return mask, blk_list
-        # One text run crossing a joined bubble's seam must stay one block;
-        # nested duplicate detections collapse to their largest box.
+        # Nested duplicate detections collapse to their largest box.
         detected_items = _drop_contained_detections(detected_items)
         if self.get_param_value('merge text lines'):
             pts_only_list = [item['pts'] for item in detected_items]
@@ -557,6 +714,10 @@ class KoharuLayoutDetector(TextDetectorBase):
                 blk.adjust_bbox()
                 examine_textblk(blk, im_w, im_h)
                 blk_list.append(blk)
+
+        # Cut after line merging (merging pre-cut boxes would re-join them),
+        # so each bubble of a split pair keeps its own block and OCR read.
+        blk_list = _seam_split_blocks(blk_list, seams, im_w, im_h)
 
         # Snapshot the detection box: TextBlkItem init rewrites block lines
         # from the stored rich text, and bounding_rect() would then return
