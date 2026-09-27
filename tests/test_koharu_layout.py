@@ -145,7 +145,9 @@ def test_weak_bubble_kept_only_when_head_stacks_it():
         {'box': [903, 945, 1167, 1453], 'conf': 0.210},
     ]
     selected = _selected_bubble_instances(page11, 0.5)
-    assert len(selected) == 5  # strong one plus the nested weak stack
+    # one per nested cluster: the strong one, plus the weak stack
+    # represented by its highest-confidence (tightest) instance
+    assert [c['conf'] for c in selected] == [0.715, 0.387]
     # a lone weak instance stays rejected: no second opinion, no outline
     lone = [{'box': [0, 0, 10, 10], 'conf': 0.387}]
     assert _selected_bubble_instances(lone, 0.5) == []

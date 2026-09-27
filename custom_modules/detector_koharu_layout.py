@@ -78,25 +78,37 @@ def _containment_ratio(box_a: List, box_b: List) -> float:
 
 
 def _selected_bubble_instances(candidates: List[dict], threshold: float) -> List[dict]:
-    """Keep strong bubble instances and weak ones the head agrees on.
+    """Pick one instance per nested cluster: strong, or weak-but-agreed.
 
     Complex balloons score below the model-card threshold while the head
-    fires several nested instances of the same balloon; a lone weak
-    instance stays rejected, a consistent stack is real.
+    fires several nested instances of them; a lone weak instance stays
+    rejected, a consistent stack is real. The highest-confidence member
+    represents the cluster because its segmentation mask is the tightest
+    - weaker instances paint noise strips around the balloon.
 
     >>> cands = [{'box': [0, 0, 10, 10], 'conf': 0.7},
     ...          {'box': [1, 1, 9, 9], 'conf': 0.3},
     ...          {'box': [50, 50, 60, 60], 'conf': 0.3}]
     >>> [c['conf'] for c in _selected_bubble_instances(cands, 0.5)]
-    [0.7, 0.3]
+    [0.7]
     """
-    return [
-        cand for i, cand in enumerate(candidates)
-        if cand['conf'] >= threshold or any(
-            _containment_ratio(cand['box'], other['box']) >= 0.6
-            for j, other in enumerate(candidates) if j != i
-        )
-    ]
+    clusters: List[List[int]] = []
+    for i, cand in enumerate(candidates):
+        for group in clusters:
+            if any(
+                _containment_ratio(cand['box'], candidates[j]['box']) >= 0.6
+                for j in group
+            ):
+                group.append(i)
+                break
+        else:
+            clusters.append([i])
+    selected = []
+    for group in clusters:
+        best = max(group, key=lambda j: candidates[j]['conf'])
+        if candidates[best]['conf'] >= threshold or len(group) >= 2:
+            selected.append(candidates[best])
+    return selected
 
 
 def _split_two_lobed(outline: List) -> Optional[List[List]]:
