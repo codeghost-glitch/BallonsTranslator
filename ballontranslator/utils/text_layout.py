@@ -39,24 +39,61 @@ class Line:
         self.pos_x += self.spacing
         self.spacing = 0
 
-def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_length, srcline_wlist, line_no: int, line_height, ref_src_lines: bool = False, ellipse=None):
+def row_width_profile(poly_arr, y_start: int, y_end: int):
+    """Horizontal extent of a polygon at every integer row, exactly.
+
+    Line budgets read from this profile follow the real outline, so
+    rectangular, lopsided, and concave bubbles budget correctly instead of
+    being rounded off by an ellipse fitted to their bounding box. That
+    approximation needed fudge factors to stay inside the bubble; measuring
+    the outline itself needs none.
+
+    Returns ``(left, right, y_start)`` in page coordinates. Rows the polygon
+    does not cover come back inverted (left > right), which callers read as
+    "no room".
+
+    >>> poly = np.array([[0, 0], [100, 0], [50, 100]], np.float32)
+    >>> left, right, y0 = row_width_profile(poly, 0, 101)
+    >>> y0, int(left[0]), int(right[0])
+    (0, 0, 100)
+    >>> int(left[50]), int(right[50])
+    (25, 75)
+    >>> bool(left[100] > right[100])
+    True
+    """
+    y0 = int(y_start)
+    rows = np.arange(y0, int(y_end), dtype=np.float64)
+    x1 = poly_arr[:, 0].astype(np.float64)
+    y1 = poly_arr[:, 1].astype(np.float64)
+    x2 = np.roll(x1, -1)
+    y2 = np.roll(y1, -1)
+    hit = ((np.minimum(y1, y2)[:, None] <= rows[None, :])
+           & (rows[None, :] < np.maximum(y1, y2)[:, None]))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        xs = x1[:, None] + (rows[None, :] - y1[:, None]) * (x2 - x1)[:, None] / (y2 - y1)[:, None]
+    ok = hit & np.isfinite(xs)
+    left = np.where(ok, xs, np.inf).min(axis=0)
+    right = np.where(ok, xs, -np.inf).max(axis=0)
+    return left, right, y0
+
+
+def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_length, srcline_wlist, line_no: int, line_height, ref_src_lines: bool = False, row_profile=None):
     """Whether a line may grow to ``new_len`` under the width budget.
 
     >>> line = Line('word', 0, 0, 60)
     >>> line_is_valid(line, 80, 0, 100, 80, None, 0, 20)
     True
-    >>> line_is_valid(line, 80, 0, 100, 80, None, 0, 20, ellipse=(50, 0, 30, 40))
+    >>> prof = (np.array([20.0, 20.0, 20.0]), np.array([80.0, 80.0, 80.0]), 0)
+    >>> line_is_valid(Line('word', 0, -10, 60), 80, 0, 100, 80, None, 0, 20, row_profile=prof)
     False
     """
-    if ellipse is not None:
-        # Elliptical typesetting: the budget is the ellipse width at this
-        # line's row, so line lengths curve with the bubble outline.
-        _, ey, ea, eb = ellipse
-        d = abs(line.pos_y + line_height / 2 - ey)
-        if d >= eb:
-            ecap = 1.0
-        else:
-            ecap = 2 * ea * np.sqrt(1.0 - (d / eb) ** 2)
+    if row_profile is not None:
+        # Shape-aware typesetting: the budget is the outline's own width at
+        # this line's row, so line lengths follow the bubble instead of its
+        # bounding box. A row outside the outline has no room.
+        p_left, p_right, p_y0 = row_profile
+        row = int(line.pos_y + line_height / 2) - p_y0
+        ecap = (p_right[row] - p_left[row]) if 0 <= row < len(p_left) else 1.0
         max_width = min(max_width, max(ecap, 1.0))
     if ref_src_lines:
         # if line_no >= 0 and line_no < len(srcline_wlist):
@@ -82,7 +119,7 @@ def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_leng
 def _hyphen_head_for_line(
     line: Line, word: str, hyphenator, measure, delimiter_len,
     line_no: int, max_width, words_length, srcline_wlist, line_height,
-    ref_src_lines, ellipse,
+    ref_src_lines, row_profile,
 ):
     """Widest pyphen head that still grows this line legally.
 
@@ -99,7 +136,7 @@ def _hyphen_head_for_line(
         hw = measure(head)
         if line_is_valid(line, line.length + hw + delimiter_len, delimiter_len,
                          max_width, words_length, srcline_wlist, line_no,
-                         line_height, ref_src_lines, ellipse):
+                         line_height, ref_src_lines, row_profile):
             best = (head, hw, word[p:], measure(word[p:]))
         elif best is not None:
             break  # positions ascend: later heads are only wider
@@ -121,7 +158,7 @@ def layout_lines_aligncenter(
     ref_src_lines = False,
     srcline_wlist=None,
     start_from_top=False,
-    ellipse=None,
+    row_profile=None,
     hyphenator=None,
     measure=None
 )->List[Line]:
@@ -202,7 +239,7 @@ def layout_lines_aligncenter(
         else:
             new_len = central_line.length + len_right[0] + delimiter_len
 
-        line_valid = line_is_valid(central_line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, -1, line_height, ref_src_lines, ellipse=ellipse)
+        line_valid = line_is_valid(central_line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, -1, line_height, ref_src_lines, row_profile=row_profile)
         if ref_src_lines and not line_valid and len(srcline_wlist) == 1:
             if new_len < max_central_width:
                 line_valid = True
@@ -274,7 +311,7 @@ def layout_lines_aligncenter(
                 mask[pos_y: line_bottom - lh_pad, right_x].mean() < border_thr:
                 line_valid = False
                 if ref_src_lines and (len(wl_list) == 1 or line_right_no + 1 >= len(srcline_wlist)) and \
-                    line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines, ellipse=ellipse):
+                    line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines, row_profile=row_profile):
                     line_valid = True
             else:
                 line_valid = True
@@ -283,7 +320,7 @@ def layout_lines_aligncenter(
                 # close this line with its hyphen-fitting head and wrap the
                 # tail instead of leaving a ragged gap.
                 if hyphenator is not None and measure is not None and new_len > max_central_width:
-                    split = _hyphen_head_for_line(line, w, hyphenator, measure, delimiter_len, line_right_no, max_central_width, words_length, srcline_wlist, line_height, ref_src_lines, ellipse)
+                    split = _hyphen_head_for_line(line, w, hyphenator, measure, delimiter_len, line_right_no, max_central_width, words_length, srcline_wlist, line_height, ref_src_lines, row_profile)
                     if split is not None:
                         head, hw, tail, tw = split
                         h_len = line.length + hw + delimiter_len
@@ -294,7 +331,7 @@ def layout_lines_aligncenter(
                 if line_valid:
                     line.append_right(w, wl+delimiter_len, delimiter)
                     line.pos_x = new_x
-                    line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines, ellipse=ellipse)
+                    line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_right_no, line_height, ref_src_lines, row_profile=row_profile)
                     if not line_valid:
                         if sum_right > 0:
                             w, wl = wlst_right.pop(0), len_right.pop(0)
@@ -334,14 +371,14 @@ def layout_lines_aligncenter(
                 mask[pos_y: line_bottom - lh_pad, right_x].mean() < border_thr:
                 line_valid = False
                 if ref_src_lines and line_left_no - 1 < 0 and \
-                    line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, ellipse=ellipse):
+                    line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, row_profile=row_profile):
                     line_valid = True
             else:
                 line_valid = True
             if line_valid:
                 line.append_left(w, wl+delimiter_len, delimiter)
                 line.pos_x = new_x
-                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, ellipse=ellipse)
+                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, row_profile=row_profile)
                 if not line_valid:
                     if sum_left > 0:
                         w, wl = wlst_left.pop(-1), len_left.pop(-1)
@@ -375,7 +412,7 @@ def layout_lines_alignside(
     max_width: int = np.inf,
     ref_src_lines = False,
     srcline_wlist=None,
-    ellipse=None,
+    row_profile=None,
     hyphenator=None,
     measure=None,
 )->List[Line]:
@@ -416,12 +453,12 @@ def layout_lines_alignside(
                 if mask[np.clip(pos_y, 0, bh - 1): np.clip(line_bottom - lh_pad, 0, bh), new_x].mean() > 240:
                     line_valid = True
                 else:
-                    if ref_src_lines and line_id + 1 >= len(srcline_wlist) and line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines, ellipse=ellipse):
+                    if ref_src_lines and line_id + 1 >= len(srcline_wlist) and line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines, row_profile=row_profile):
                         line_valid = True
             if line_valid:
-                line_valid = line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines, ellipse=ellipse)
+                line_valid = line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines, row_profile=row_profile)
                 if hyphenator is not None and measure is not None and new_len > max_width:
-                    split = _hyphen_head_for_line(line, w, hyphenator, measure, delimiter_len, line_id, max_width, words_length, srcline_wlist, line_height, ref_src_lines, ellipse)
+                    split = _hyphen_head_for_line(line, w, hyphenator, measure, delimiter_len, line_id, max_width, words_length, srcline_wlist, line_height, ref_src_lines, row_profile)
                     if split is not None:
                         head, hw, tail, tw = split
                         line.append_right(head, hw + delimiter_len, delimiter)
@@ -454,7 +491,7 @@ def layout_text(
     src_is_cjk=False,
     tgt_is_cjk=False,
     ref_src_lines = False,
-    ellipse=None,
+    row_profile=None,
     hyphenator=None,
     measure=None
 ) -> Tuple[str, List]:
@@ -524,11 +561,11 @@ def layout_text(
     if alignment == TextAlignment.Center:
         lines, adjust_xy = layout_lines_aligncenter(blk, mask, words, centroid, wl_list, delimiter_len, line_height, spacing, delimiter, 
                                          max_central_width, ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist,
-                                         start_from_top=start_from_top, ellipse=ellipse,
+                                         start_from_top=start_from_top, row_profile=row_profile,
                                          hyphenator=hyphenator, measure=measure)
     else:
         lines, adjust_xy = layout_lines_alignside(blk, mask, words, centroid, wl_list, delimiter_len, line_height, spacing, delimiter, False, max_central_width, 
-                                       ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist, ellipse=ellipse,
+                                       ref_src_lines=ref_src_lines, srcline_wlist=srcline_wlist, row_profile=row_profile,
                                        hyphenator=hyphenator, measure=measure)
     
     concated_text = []

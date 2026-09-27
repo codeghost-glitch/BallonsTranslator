@@ -4,6 +4,7 @@ from ballontranslator.utils.text_layout import (
     Line,
     hyphenate_long_words,
     line_is_valid,
+    row_width_profile,
 )
 
 try:
@@ -48,23 +49,46 @@ class TestHyphenateLongWords(unittest.TestCase):
         )
 
 
-class TestEllipseLineBudget(unittest.TestCase):
+class TestRowProfileLineBudget(unittest.TestCase):
 
     def test_budget_shrinks_away_from_center(self) -> None:
-        # Ellipse (cx=0, cy=100, a=60, b=80); line_height=20.
-        ellipse = (0, 100, 60, 80)
-        center_row = Line('abc', 0, 90, 60, 0)   # row center: 100 -> cap 120
-        edge_row = Line('abc', 0, 160, 60, 0)    # row center: 170 -> cap ~58
+        # Same idea as the old ellipse budget, now measured from the
+        # outline: a circle 200 tall and 200 wide centred on row 100 is 200
+        # wide at the middle and ~97 at 35px off-centre.
+        import numpy as np
+        circle = [(100.0 + 100 * np.cos(t), 100 + 100 * np.sin(t))
+                  for t in np.linspace(0, 2 * np.pi, 720, endpoint=False)]
+        left, right, y0 = row_width_profile(np.array(circle, np.float32), 0, 200)
+        center_row = Line('abc', 0, 90, 60, 0)   # row center 100, width 200
+        edge_row = Line('abc', 0, 160, 60, 0)    # row center 170, width ~143
+        # 500 fits the middle row's budget but overruns the edge row's; the
+        # grow-balance branch accepts a short line up to max_width/new_len.
         self.assertTrue(
-            line_is_valid(center_row, 110, 0, 10000, 0, None, 0, 20,
-                          ellipse=ellipse)
+            line_is_valid(center_row, 500, 0, 10000, 0, None, 0, 20,
+                          row_profile=(left, right, y0))
         )
         self.assertFalse(
-            line_is_valid(edge_row, 110, 0, 10000, 0, None, 0, 20,
-                          ellipse=ellipse)
+            line_is_valid(edge_row, 500, 0, 10000, 0, None, 0, 20,
+                          row_profile=(left, right, y0))
         )
 
-    def test_rectangular_layout_unchanged_without_ellipse(self) -> None:
+    def test_row_outside_outline_has_no_room(self) -> None:
+        import numpy as np
+        from ballontranslator.utils.text_layout import row_width_profile
+        square = np.array([[0, 0], [100, 0], [100, 100], [0, 100]], np.float32)
+        left, right, y0 = row_width_profile(square, 0, 101)
+        inside = Line('abc', 0, 40, 60, 0)
+        below = Line('abc', 0, 140, 60, 0)
+        self.assertTrue(
+            line_is_valid(inside, 90, 0, 10000, 0, None, 0, 20,
+                          row_profile=(left, right, y0))
+        )
+        self.assertFalse(
+            line_is_valid(below, 90, 0, 10000, 0, None, 0, 20,
+                          row_profile=(left, right, y0))
+        )
+
+    def test_rectangular_layout_unchanged_without_profile(self) -> None:
         line = Line('abc', 0, 90, 60, 0)
         self.assertTrue(line_is_valid(line, 110, 0, 10000, 0, None, 0, 20))
         self.assertFalse(line_is_valid(line, 200, 0, 100, 0, None, 0, 20))

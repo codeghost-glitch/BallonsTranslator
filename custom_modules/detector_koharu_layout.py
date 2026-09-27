@@ -228,14 +228,20 @@ def _cut_rect(x1, y1, x2, y2, a, b):
         if not min(ay, ay + dy) <= mid_y <= max(ay, ay + dy) or dy == 0:
             return None
         cut = ax + dx * ((mid_y - ay) / dy)
-        if not (x1 + 6 < cut < x2 - 6):
+        # Each half must keep a real share of the box. Overlapping bubbles
+        # put the seam next to text that belongs to one side, and a fixed
+        # pixel sliver survives it: a 38px column cut from a 185px box
+        # (20% here) duplicated its neighbour's last word and left 55% of
+        # its glyphs outside the detector's text mask, so they never got
+        # inpainted.
+        if not (x1 + (x2 - x1) * 0.25 < cut < x2 - (x2 - x1) * 0.25):
             return None
         return ([x1, y1, cut - x1, y2 - y1], [cut, y1, x2 - cut, y2 - y1])
     mid_x = (x1 + x2) / 2
     if not min(ax, ax + dx) <= mid_x <= max(ax, ax + dx) or dx == 0:
         return None
     cut = ay + dy * ((mid_x - ax) / dx)
-    if not (y1 + 6 < cut < y2 - 6):
+    if not (y1 + (y2 - y1) * 0.25 < cut < y2 - (y2 - y1) * 0.25):
         return None
     return ([x1, y1, x2 - x1, cut - y1], [x1, cut, x2 - x1, y2 - cut])
 

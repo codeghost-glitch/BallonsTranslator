@@ -38,7 +38,11 @@ from ballontranslator.utils.config import pcfg
 from ballontranslator.utils import shared
 from ballontranslator.utils.imgproc_utils import extract_ballon_region, get_block_mask
 from ballontranslator.utils.text_processing import seg_text, is_cjk
-from ballontranslator.utils.text_layout import layout_text, hyphenate_long_words
+from ballontranslator.utils.text_layout import (
+    layout_text,
+    hyphenate_long_words,
+    row_width_profile,
+)
 
 
 def build_path_reorder_map(
@@ -1166,24 +1170,24 @@ class SceneTextManager(QObject):
                 centroid[0] = int(abs_centroid[0] - mask_xyxy[0])
                 centroid[1] = int(abs_centroid[1] - mask_xyxy[1])
 
-        if poly_arr is not None and mb_w > 0:
-            # Wrap column for outline fits: a single long line would use the
-            # full width while the bubble's height stays empty, and growth is
-            # then width-bound. 80% of the bubble keeps lines ragged inside
-            # the ellipse caps and lets the font grow until the height fills.
-            max_central_width = mb_w * 0.8
-
-        ellipse = None
-        if poly_arr is not None and pcfg.let_elliptic_layout and mb_w > 0 and abs(blkitem.blk.angle) == 0:
-            # Inscribed ellipse from the bubble outline: line_is_valid budgets
-            # each row by the ellipse width there, curving the block with the
-            # balloon instead of filling its bounding rectangle. Center and
-            # radii both come from the bbox so the ellipse never crosses it
-            # (a mean center with bbox radii bulges past lopsided outlines).
-            ellipse = (
-                mb_x0 + mb_w / 2, mb_y0 + mb_h / 2,
-                mb_w / 2 * 0.95, mb_h / 2 * 0.95,
-            )
+        row_profile = None
+        if (poly_arr is not None and mb_w > 0
+                and abs(blkitem.blk.angle) == 0
+                and pcfg.let_elliptic_layout):
+            # Exact outline width per row, measured once: each line is
+            # budgeted by the bubble's real extent at its own height, so
+            # round, rectangular, lopsided, and concave balloons all fit
+            # without a fitted-ellipse fudge factor. The flag still turns
+            # shape-aware budgeting off entirely, falling back to the mask
+            # rectangle.
+            row_profile = row_width_profile(poly_arr, mb_y0, mb_y1 + 1)
+            # Wrap column: the widest row the outline offers. A single
+            # long line would otherwise use full width while the height
+            # stays empty, and growth becomes width-bound.
+            max_central_width = float(np.nanmax(
+                np.where(row_profile[1] > row_profile[0],
+                         row_profile[1] - row_profile[0], 0.0)
+            ))
 
         # Layout, then keep shrinking until the final canvas fits the balloon
         # mask: the ratio heuristic above is only a guess (its 0.6/0.7 floors
@@ -1226,7 +1230,7 @@ class SceneTextManager(QObject):
                 src_is_cjk=src_is_cjk,
                 tgt_is_cjk=tgt_is_cjk,
                 ref_src_lines=ref_src_lines,
-                ellipse=ellipse,
+                row_profile=row_profile,
                 hyphenator=hyphenator,
                 measure=hyphen_measure
             )
