@@ -143,16 +143,20 @@ def layout_lines_aligncenter(
             new_x_l = centroid_x - new_len_l // 2
             new_r_l = new_x_l + new_len_l
             if (new_x_l > 0 and new_r_l < bw):
-                if mask[pos_y: line_bottom - lh_pad, new_x_l].mean() > border_thr and \
-                    mask[pos_y: line_bottom - lh_pad, new_r_l].mean() > border_thr:
+                left_col = mask[pos_y: line_bottom - lh_pad, new_x_l]
+                right_col = mask[pos_y: line_bottom - lh_pad, new_r_l]
+                if left_col.size and right_col.size and \
+                    left_col.mean() > border_thr and right_col.mean() > border_thr:
                     left_valid = True
         if sum_right > 0:
             new_len_r = central_line.length + len_right[0] + delimiter_len
             new_x_r = centroid_x - new_len_r // 2 - line_height // 2
             new_r_r = centroid_x + new_len_r // 2 + line_height // 2
             if (new_x_r > 0 and new_r_r < bw):
-                if mask[pos_y: line_bottom - lh_pad, new_x_r].mean() > border_thr and \
-                    mask[pos_y: line_bottom - lh_pad, new_r_r].mean() > border_thr:
+                left_col = mask[pos_y: line_bottom - lh_pad, new_x_r]
+                right_col = mask[pos_y: line_bottom - lh_pad, new_r_r]
+                if left_col.size and right_col.size and \
+                    left_col.mean() > border_thr and right_col.mean() > border_thr:
                     right_valid = True
 
         insert_left = False

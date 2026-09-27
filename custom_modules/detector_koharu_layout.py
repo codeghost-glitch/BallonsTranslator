@@ -536,6 +536,12 @@ class KoharuLayoutDetector(TextDetectorBase):
                 examine_textblk(blk, im_w, im_h)
                 blk_list.append(blk)
 
+        # Snapshot the detection box: TextBlkItem init rewrites block lines
+        # from the stored rich text, and bounding_rect() would then return
+        # the previous render's text box instead of the detected region.
+        for blk in blk_list:
+            blk._detected_bbox = list(blk.bounding_rect())
+
         blk_list = sort_regions(blk_list)
 
         fnt_rsz = self.get_param_value('font size multiplier')

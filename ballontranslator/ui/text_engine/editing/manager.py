@@ -364,6 +364,35 @@ class TextPanel(Widget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
 
+def _mask_anchor(mask: np.ndarray):
+    """Deepest interior point of the mask: its pole of inaccessibility.
+
+    The pixel mean of a blobby contour can sit next to an edge, where any
+    text width fails the collision probes; the deepest point gives the
+    layout the most clearance in every direction.
+
+    >>> mask = np.zeros((9, 9), np.uint8)
+    >>> mask[1:8, 1:8] = 255
+    >>> _mask_anchor(mask)
+    (4, 4)
+    """
+    if mask is None or not mask.any():
+        return None
+    # A perfectly solid crop has no background pixel and the transform
+    # degenerates; a zero border gives every interior pixel an edge.
+    padded = cv2.copyMakeBorder(
+        (mask > 0).astype(np.uint8), 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0
+    )
+    dist = cv2.distanceTransform(padded, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)[1:-1, 1:-1]
+    if not np.isfinite(dist).any() or float(dist.max()) <= 0:
+        return None
+    # On a wide mask every point of the midline ties for the maximum and
+    # minMaxLoc would hand back its leftmost pixel; the centroid of the
+    # tied set is the shape's true center.
+    ys, xs = np.nonzero(dist >= float(dist.max()) - 1e-6)
+    return int(round(float(xs.mean()))), int(round(float(ys.mean())))
+
+
 def _attribution_points(blk) -> np.ndarray:
     """Line quads plus centroids for one block, block center as fallback.
 
@@ -397,7 +426,10 @@ def _bubble_polygon_for(proj, blk) -> Optional[List]:
     for poly in outlines:
         arr = np.asarray(poly, np.float32)
         for x, y in pts:
-            depth = cv2.pointPolygonTest(arr, (float(x), float(y)), False)
+            # Measured distance, not the sign: sign-only comparison keeps
+            # the first polygon that contains any point, which strands
+            # seam-straddling blocks on a bubble they merely clip.
+            depth = cv2.pointPolygonTest(arr, (float(x), float(y)), True)
             if depth > best_depth:
                 best_depth = depth
                 best = poly
@@ -960,7 +992,8 @@ class SceneTextManager(QObject):
             # detection box stays put until the next detect run. Rich-text
             # init and oversized blocks can push it past the page edge, and
             # enlarge_window inverts when that happens - clamp first.
-            bounding_rect = list(blkitem.blk.bounding_rect())
+            detected_box = getattr(blkitem.blk, '_detected_bbox', None)
+            bounding_rect = list(detected_box) if detected_box else list(blkitem.blk.bounding_rect())
             bx, by = max(bounding_rect[0], 0), max(bounding_rect[1], 0)
             bw = min(bounding_rect[0] + bounding_rect[2], im_w) - bx
             bh = min(bounding_rect[1] + bounding_rect[3], im_h) - by
@@ -1092,11 +1125,11 @@ class SceneTextManager(QObject):
             else:
                 centroid = [bounding_rect[2] // 2, bounding_rect[3] // 2]
             if poly_arr is not None and mask_ys.size:
-                # Lay out on the bubble center, not the detection box center:
-                # the collision rule below maximizes the font only when the
-                # canvas starts centered inside the outline. mask is the
-                # window-cropped polygon, so its pixel mean is window-relative.
-                centroid = [int(mask_xs.mean()), int(mask_ys.mean())]
+                # Lay out on the bubble's deepest point: the collision rule
+                # maximizes the font only when the canvas starts where it
+                # has the most clearance (mask coords are window-relative).
+                anchor = _mask_anchor(mask)
+                centroid = list(anchor) if anchor is not None else [int(mask_xs.mean()), int(mask_ys.mean())]
         else:
             max_central_width = np.inf
             centroid = [0, 0]
@@ -1205,10 +1238,15 @@ class SceneTextManager(QObject):
                     ]
                 clear = True
                 for rx, ry, rw, rh in line_rects:
+                    # One-pixel inset: the rendered line box carries a pixel
+                    # of padding the layout rows do not, so a corner landing
+                    # exactly on the outline would spill in the render.
+                    ix0, iy0 = rx + 1, ry + 1
+                    ix1, iy1 = rx + max(rw - 1, 1), ry + max(rh - 1, 1)
                     for qx, qy in (
-                        (rx, ry), (rx + rw, ry), (rx, ry + rh), (rx + rw, ry + rh),
-                        (rx + rw // 2, ry), (rx + rw // 2, ry + rh),
-                        (rx, ry + rh // 2), (rx + rw, ry + rh // 2),
+                        (ix0, iy0), (ix1, iy0), (ix0, iy1), (ix1, iy1),
+                        ((ix0 + ix1) // 2, iy0), ((ix0 + ix1) // 2, iy1),
+                        (ix0, (iy0 + iy1) // 2), (ix1, (iy0 + iy1) // 2),
                     ):
                         if cv2.pointPolygonTest(poly_arr, (float(qx), float(qy)), False) < 0:
                             clear = False
@@ -1260,7 +1298,9 @@ class SceneTextManager(QObject):
             # one more shrink never will - accept and stop (free-standing
             # credits text can sit offset from whatever white region floods
             # behind it, and chasing that shrinks them to the floor).
-            scale = min(mb_w * 0.98 / w, mb_h * 0.98 / h)
+            # A degenerate layout (zero canvas at absurd shrink sizes)
+            # must not divide by zero; treat it as needing a shrink step.
+            scale = min(mb_w * 0.98 / w, mb_h * 0.98 / h) if w > 0 and h > 0 else 0.9
             if scale >= 1:
                 off_mask = lx < mb_x0 or ly < mb_y0 or lx + w > mb_x1 or ly + h > mb_y1
                 if off_mask:
@@ -1284,8 +1324,10 @@ class SceneTextManager(QObject):
             resize_ratio *= scale
             blk_font.setPointSizeF(blk_font.pointSizeF() * scale)
             wl_list = (np.array(wl_list, np.float64) * scale).astype(np.int32).tolist()
-            line_height = int(line_height * scale)
-            delimiter_len = int(delimiter_len * scale)
+            # Keep at least one pixel: int truncation can zero the row pitch
+            # after enough shrink steps, which breaks every later layout.
+            line_height = max(1, int(line_height * scale))
+            delimiter_len = max(1, int(delimiter_len * scale))
 
         # font size post adjustment
         post_resize_ratio = 1
@@ -1334,8 +1376,11 @@ class SceneTextManager(QObject):
             _ys, _xs = np.nonzero(mask)
             if _ys.size == 0:
                 break
-            _cx = mask_xyxy[0] + float(_xs.mean())
-            _cy = mask_xyxy[1] + float(_ys.mean())
+            _anchor = _mask_anchor(mask)
+            if _anchor is None:
+                break
+            _cx = mask_xyxy[0] + float(_anchor[0])
+            _cy = mask_xyxy[1] + float(_anchor[1])
             _br = blkitem.absBoundingRect(qrect=True)
             _dx = _cx - (_br.x() + _br.width() / 2)
             _dy = _cy - (_br.y() + _br.height() / 2)
