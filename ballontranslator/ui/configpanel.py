@@ -1103,13 +1103,13 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         )
         self.let_autolayout_checker.stateChanged.connect(self.on_autolayout_changed)
 
-        self.let_elliptic_checker, _ = typesettingConfigPanel.addCheckBox(
-            self.tr('Elliptical typesetting'),
+        self.shape_aware_checker, _ = typesettingConfigPanel.addCheckBox(
+            self.tr('Shape-aware typesetting'),
             discription=self.tr(
-                'Curve text lines along detected speech bubble outlines.',
+                'Fit each text line to the detected speech bubble outline at its own height.',
             ),
         )
-        self.let_elliptic_checker.stateChanged.connect(self.on_elliptic_changed)
+        self.shape_aware_checker.stateChanged.connect(self.on_shape_aware_changed)
 
         self.auto_light_text_checker, _ = typesettingConfigPanel.addCheckBox(
             self.tr('Auto white text on dark backgrounds'),
@@ -1646,8 +1646,8 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
     def on_autolayout_changed(self):
         pcfg.let_autolayout_flag = self.let_autolayout_checker.isChecked()
 
-    def on_elliptic_changed(self):
-        pcfg.let_elliptic_layout = self.let_elliptic_checker.isChecked()
+    def on_shape_aware_changed(self):
+        pcfg.let_shape_aware_layout = self.shape_aware_checker.isChecked()
 
     def on_auto_light_text_changed(self):
         pcfg.auto_light_text_on_dark = self.auto_light_text_checker.isChecked()
@@ -1886,7 +1886,7 @@ class ConfigPanel(OutsideClickFramelessMixin, FramelessWindow):
         self.let_family_combox.setCurrentIndex(pcfg.let_family_flag)
         self.let_writing_mode_combox.setCurrentIndex(pcfg.let_writing_mode_flag)
         self.let_autolayout_checker.setChecked(pcfg.let_autolayout_flag)
-        self.let_elliptic_checker.setChecked(pcfg.let_elliptic_layout)
+        self.shape_aware_checker.setChecked(pcfg.let_shape_aware_layout)
         self.auto_light_text_checker.setChecked(pcfg.auto_light_text_on_dark)
         self.quick_insert_characters_edit.setText(pcfg.quick_insert_characters)
         self.let_letter_case_buttons[pcfg.let_letter_case].setChecked(True)

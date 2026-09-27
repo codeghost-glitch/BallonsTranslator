@@ -226,12 +226,12 @@ class TestAutoLayoutFit(unittest.TestCase):
         self.assertLessEqual(canvas_w, 110 + 10)
         self.assertLessEqual(canvas_h, 120 + 5)
 
-    def test_elliptical_typesetting_follows_bubble_outline(self) -> None:
+    def test_shape_aware_typesetting_follows_bubble_outline(self) -> None:
         # With elliptical typesetting on, lines curve with the outline: the
         # middle line runs widest, the edge lines stay short.
         pcfg.let_fntsize_flag = 0
-        old_elliptic = pcfg.let_elliptic_layout
-        pcfg.let_elliptic_layout = True
+        old_shape_aware = pcfg.let_shape_aware_layout
+        pcfg.let_shape_aware_layout = True
         try:
             img = np.full((IMG_H, IMG_W, 3), 255, np.uint8)
             poly = cv2.ellipse2Poly(
@@ -262,7 +262,7 @@ class TestAutoLayoutFit(unittest.TestCase):
             self.assertGreater(max(widths), widths[-1])
             self.assertLessEqual(max(widths), 190 + 10)
         finally:
-            pcfg.let_elliptic_layout = old_elliptic
+            pcfg.let_shape_aware_layout = old_shape_aware
 
     def test_lines_stay_inside_a_narrow_outline(self) -> None:
         # The first word of a line lands before any width cap runs, and the
@@ -270,9 +270,9 @@ class TestAutoLayoutFit(unittest.TestCase):
         # rejected: wide words spilled out of narrow bubbles. Every rendered
         # line endpoint must end up inside the outline.
         pcfg.let_fntsize_flag = 0
-        old_elliptic = pcfg.let_elliptic_layout
+        old_shape_aware = pcfg.let_shape_aware_layout
         old_target = pcfg.module.translate_target
-        pcfg.let_elliptic_layout = True
+        pcfg.let_shape_aware_layout = True
         pcfg.module.translate_target = 'en'
         try:
             img = np.full((IMG_H, IMG_W, 3), 255, np.uint8)
@@ -315,7 +315,7 @@ class TestAutoLayoutFit(unittest.TestCase):
                         f'line {i} {ln!r} endpoint {edge_x:.0f} outside outline',
                     )
         finally:
-            pcfg.let_elliptic_layout = old_elliptic
+            pcfg.let_shape_aware_layout = old_shape_aware
             pcfg.module.translate_target = old_target
 
     def test_small_starting_font_grows_to_fill_outline(self) -> None:

@@ -1173,7 +1173,7 @@ class SceneTextManager(QObject):
         row_profile = None
         if (poly_arr is not None and mb_w > 0
                 and abs(blkitem.blk.angle) == 0
-                and pcfg.let_elliptic_layout):
+                and pcfg.let_shape_aware_layout):
             # Exact outline width per row, measured once: each line is
             # budgeted by the bubble's real extent at its own height, so
             # round, rectangular, lopsided, and concave balloons all fit

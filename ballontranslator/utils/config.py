@@ -428,7 +428,7 @@ class ProgramConfig(Config):
     let_writing_mode_flag: int = 0
     let_family_flag: int = 0
     let_autolayout_flag: bool = True
-    let_elliptic_layout: bool = True
+    let_shape_aware_layout: bool = True
     auto_light_text_on_dark: bool = True
     let_letter_case: str = OCRTextPostprocess.NONE
     let_show_only_custom_fonts_flag: bool = False
@@ -520,6 +520,12 @@ class ProgramConfig(Config):
                             color,
                         )
                 config_dict['custom_colors'] = valid_colors
+
+        # Renamed: the flag gates exact per-row outline budgeting, and no
+        # ellipse is computed anywhere. Same migration pattern as
+        # translate_by_textblock below.
+        if 'let_elliptic_layout' in config_dict and 'let_shape_aware_layout' not in config_dict:
+            config_dict['let_shape_aware_layout'] = config_dict.pop('let_elliptic_layout')
 
         if 'module' in config_dict:
             module_cfg = config_dict['module']
