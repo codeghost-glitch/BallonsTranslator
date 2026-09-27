@@ -372,7 +372,11 @@ class KoharuLayoutDetector(TextDetectorBase):
         }
         want_bubble = 'bubble' in valid_labels
         bubble_threshold = float(self.get_param_value('bubble threshold'))
-        page = proj.current_img if proj is not None else None
+        # The pipeline detects pages without switching the viewer's page, so
+        # the in-flight page key wins over current_img for per-page writes.
+        page = None
+        if proj is not None:
+            page = getattr(proj, 'detecting_page', None) or proj.current_img
         bubble_outlines = []
         if page is not None:
             # Each detect run replaces the stored outlines, so disabling the

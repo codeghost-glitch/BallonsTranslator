@@ -159,6 +159,7 @@ class ProjImgTrans:
         self.proj_path: str = None
 
         self.current_img: str = None
+        self._detecting_page: Optional[str] = None
         self.img_array: np.ndarray = None
         self.mask_array: np.ndarray = None
         self.inpainted_array: np.ndarray = None
@@ -739,7 +740,26 @@ class ProjImgTrans:
 
     def begin_detection(self, page_key):
         """Invalidate translation before detection can replace page blocks."""
+        self._detecting_page = page_key
         self.invalidate_translation(page_key)
+
+    @property
+    def detecting_page(self) -> Optional[str]:
+        """Page key of the in-flight detection run, if any.
+
+        The pipeline detects pages without switching the viewer's
+        `current_img`, so detectors persisting per-page data must key it
+        here; `current_img` stays the fallback for direct calls.
+
+        >>> project = ProjImgTrans()
+        >>> project._image_info['001.png'] = {'finish_code': 0}
+        >>> project.detecting_page is None
+        True
+        >>> project.begin_detection('001.png')
+        >>> project.detecting_page
+        '001.png'
+        """
+        return self._detecting_page
 
     def begin_full_page_translation(self, page_key):
         """Invalidate old completion until a full translation succeeds."""

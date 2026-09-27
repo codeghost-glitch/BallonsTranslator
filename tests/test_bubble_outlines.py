@@ -33,6 +33,16 @@ class TestBubbleOutlinesProjectBoundary(unittest.TestCase):
         proj._image_info = {'001.png': {}}
         return proj
 
+    def test_begin_detection_records_page_key(self) -> None:
+        # The pipeline never switches current_img while iterating pages, so
+        # detectors keying per-page data must read detecting_page instead of
+        # the viewer's page (outlines otherwise all land on one wrong key).
+        proj = self._proj()
+        proj._image_info['001.png']['finish_code'] = 0
+        self.assertIsNone(proj.detecting_page)
+        proj.begin_detection('001.png')
+        self.assertEqual(proj.detecting_page, '001.png')
+
     def test_roundtrip_clear_and_detached_copy(self):
         proj = self._proj()
         poly = [[10, 10], [50, 12], [46, 44], [12, 40]]

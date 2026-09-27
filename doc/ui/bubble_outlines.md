@@ -17,6 +17,10 @@ contract.
 - Shape: list of polygons, each polygon a list of at least three `[x, y]`
   page-pixel points. Only `set_bubble_outlines()` writes; `get_bubble_outlines()`
   returns a detached copy.
+- Capture is keyed by `begin_detection()`'s page (`detecting_page`), with
+  `current_img` as the fallback for direct calls: the pipeline detects pages
+  without switching the viewer's page, so keying by `current_img` writes
+  every page's outlines onto whichever page was open.
 - Passive project loading is permissive: malformed records log a warning, the
   invalid value alone is dropped, and the rest of the page keeps loading.
 - Each koharu detect run clears then rewrites the current page's outlines, so
