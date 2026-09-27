@@ -1095,6 +1095,8 @@ class SceneTextManager(QObject):
 
         offset_retries = 0
         prev_frac = -1.0
+        grew = False
+        good_text, good_xywh, good_font, good_ratio = None, None, 0.0, 1.0
         # Coverage is measured on a hole-closed mask: the source image still
         # carries the original glyphs the flood fill leaves out, and counting
         # them as off-mask makes an in-balloon text look under-covered.
@@ -1165,6 +1167,25 @@ class SceneTextManager(QObject):
                     if not clear:
                         break
                 if inside and clear:
+                    # Accepted: keep growing toward the outline when the
+                    # starting font leaves the bubble mostly empty (the
+                    # pre-fit heuristic only ever shrinks). Probes police
+                    # every grown step and a failed look-ahead reverts below;
+                    # no growth on the last two iterations, so the final
+                    # layout always matches the applied font.
+                    room = min(mb_w * 0.98 / w, mb_h * 0.98 / h)
+                    if room > 1.03 and _ < 11:
+                        good_text, good_xywh = new_text, xywh
+                        good_font = blk_font.pointSizeF()
+                        good_ratio = resize_ratio
+                        grow = min(room, 1.15)
+                        resize_ratio *= grow
+                        blk_font.setPointSizeF(good_font * grow)
+                        wl_list = (np.array(wl_list, np.float64) * grow).astype(np.int32).tolist()
+                        line_height = int(line_height * grow)
+                        delimiter_len = int(delimiter_len * grow)
+                        grew = True
+                        continue
                     break
             elif inside and frac >= 0.9:
                 break
@@ -1176,6 +1197,14 @@ class SceneTextManager(QObject):
                 # the bubble at the fitted size).
                 break
             prev_frac = frac if inside else -1.0
+            if grew:
+                # The grown look-ahead failed the collision test: restore the
+                # last accepted layout. Shrinking from the overshoot would
+                # oscillate around the fill target.
+                new_text, xywh = good_text, good_xywh
+                blk_font.setPointSizeF(good_font)
+                resize_ratio = good_ratio
+                break
             # Scale toward the mask bbox; when the bbox size already fits,
             # only corner spill and placement offset remain. Corner spill
             # shrinks away; an anchored origin that stays off the mask after

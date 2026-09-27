@@ -318,6 +318,45 @@ class TestAutoLayoutFit(unittest.TestCase):
             pcfg.let_elliptic_layout = old_elliptic
             pcfg.module.translate_target = old_target
 
+    def test_small_starting_font_grows_to_fill_outline(self) -> None:
+        # The pre-fit heuristic only shrinks; an outline fit must grow a
+        # too-small starting font until the bubble is filled, with the
+        # collision probes keeping every grown step inside the outline.
+        pcfg.let_fntsize_flag = 0
+        img = np.full((IMG_H, IMG_W, 3), 255, np.uint8)
+        poly = [[150, 100], [350, 100], [350, 260], [150, 260]]  # 200x160
+        block = TextBlock(BLOCK_BBOX)
+        block.set_lines_by_xywh([
+            BLOCK_BBOX[0], BLOCK_BBOX[1],
+            BLOCK_BBOX[2] - BLOCK_BBOX[0], BLOCK_BBOX[3] - BLOCK_BBOX[1],
+        ])
+        block.fontformat.font_size = 8
+        item = TextBlkItem(block, 0)
+        stub = types.SimpleNamespace(
+            imgtrans_proj=types.SimpleNamespace(
+                img_array=img, current_img='001.png',
+                get_bubble_outlines=lambda page: [poly],
+            ),
+            pairwidget_list=[],
+            auto_textlayout_flag=True,
+        )
+        result = SceneTextManager.layout_textblk(stub, item, text=LONG_TEXT)
+        self.assertIs(result, True)
+        self.assertGreaterEqual(item.font().pointSizeF(), 12.0)
+        poly_arr = np.asarray(poly, np.float32)
+        br = item.absBoundingRect(qrect=True)
+        fm = QFontMetricsF(item.font())
+        lines = item.toPlainText().split('\n')
+        cx = br.x() + br.width() / 2
+        for i, ln in enumerate(lines):
+            lw = fm.horizontalAdvance(ln)
+            row = br.y() + (i + 0.5) * br.height() / len(lines)
+            for edge_x in (cx - lw / 2, cx + lw / 2):
+                self.assertGreaterEqual(
+                    cv2.pointPolygonTest(poly_arr, (float(edge_x), float(row)), False),
+                    0, f'line {i} {ln!r} outside outline after growth',
+                )
+
     def test_balloon_mask_survives_a_large_search_window(self) -> None:
         # A balloon-sized contour is ~1/4 of the 2.25x window here; the
         # selection must keep the balloon instead of degrading the mask to
