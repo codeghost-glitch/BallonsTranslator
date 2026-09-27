@@ -206,33 +206,6 @@ def layout_lines_aligncenter(
         if ref_src_lines and not line_valid and len(srcline_wlist) == 1:
             if new_len < max_central_width:
                 line_valid = True
-        if hyphenator is not None and measure is not None and new_len > max_central_width:
-            # Optical fill of the widest line: put the pending word's
-            # hyphen-fitting head here and queue the tail for the half
-            # lines instead of leaving a word-shaped gap.
-            pend_list = wlst_left if insert_left else wlst_right
-            pend_lens = len_left if insert_left else len_right
-            pend_idx = -1 if insert_left else 0
-            if pend_list:
-                split = _hyphen_head_for_line(
-                    central_line, pend_list[pend_idx], hyphenator, measure,
-                    delimiter_len, -1, max_central_width, words_length,
-                    srcline_wlist, line_height, ref_src_lines, ellipse)
-                if split is not None:
-                    head, hw, tail, tw = split
-                    h_len = central_line.length + hw + delimiter_len
-                    old_pend = pend_lens[pend_idx]
-                    pend_list[pend_idx] = tail
-                    pend_lens[pend_idx] = tw
-                    if insert_left:
-                        central_line.append_left(head, hw + delimiter_len, delimiter)
-                        central_line.pos_x = centroid_x - h_len // 2
-                        sum_left += tw - old_pend
-                    else:
-                        central_line.append_right(head, hw + delimiter_len, delimiter)
-                        central_line.pos_x = centroid_x - h_len // 2 - line_height // 2
-                        sum_right += tw - old_pend
-                    continue
         if not line_valid:
             break
 
@@ -366,26 +339,16 @@ def layout_lines_aligncenter(
             else:
                 line_valid = True
             if line_valid:
-                if hyphenator is not None and measure is not None and new_len > max_central_width:
-                    split = _hyphen_head_for_line(line, w, hyphenator, measure, delimiter_len, line_left_no, max_central_width, words_length, srcline_wlist, line_height, ref_src_lines, ellipse)
-                    if split is not None:
-                        head, hw, tail, tw = split
-                        h_len = line.length + hw + delimiter_len
-                        line.append_left(head, hw + delimiter_len, delimiter)
-                        line.pos_x = centroid_x - h_len // 2 - line_height // 2
-                        w, wl = tail, tw
-                        line_valid = False
-                if line_valid:
-                    line.append_left(w, wl+delimiter_len, delimiter)
-                    line.pos_x = new_x
-                    line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, ellipse=ellipse)
-                    if not line_valid:
-                        if sum_left > 0:
-                            w, wl = wlst_left.pop(-1), len_left.pop(-1)
-                            sum_left -= wl
-                        else:
-                            line.strip_spacing()
-                            break
+                line.append_left(w, wl+delimiter_len, delimiter)
+                line.pos_x = new_x
+                line_valid = line_is_valid(line, new_len, delimiter_len, max_central_width, words_length, srcline_wlist, line_left_no, line_height, ref_src_lines, ellipse=ellipse)
+                if not line_valid:
+                    if sum_left > 0:
+                        w, wl = wlst_left.pop(-1), len_left.pop(-1)
+                        sum_left -= wl
+                    else:
+                        line.strip_spacing()
+                        break
 
             if not line_valid :
                 pos_x = centroid_x - wl // 2

@@ -120,3 +120,36 @@ class TestOpticalHyphenation(unittest.TestCase):
             max_central_width=120, src_is_cjk=False, tgt_is_cjk=False,
         )
         self.assertNotIn('-', text.replace(' ', ''))
+
+
+class TestCenterLayoutHyphenOrder(unittest.TestCase):
+
+    def test_hyphenation_preserves_word_order_center_alignment(self) -> None:
+        # The center path builds lines outward in both directions; a head /
+        # tail swap there reorders text ('radio' -> 'dio ... ra-'). Whatever
+        # the wrap does, the joined output must equal the input words.
+        if not HAS_PYPHEN:
+            self.skipTest('pyphen not installed')
+        import numpy as np
+        from ballontranslator.utils.textblock import TextBlock, TextAlignment
+        from ballontranslator.utils.text_layout import layout_text
+
+        measure = lambda s: len(s) * 10
+        blk = TextBlock(xyxy=[0, 0, 400, 80])
+        blk.set_lines_by_xywh([0, 0, 400, 80])
+        blk.alignment = TextAlignment.Center
+        mask = np.full((140, 400), 255, np.uint8)
+        words = ['An', 'analog', 'radio', 'signal', 'came', 'through']
+        wl = [measure(w) for w in words]
+        hyphenator = __import__('pyphen').Pyphen(lang='en')
+        text, _, _, _ = layout_text(
+            blk, mask, [0, 0, 400, 140], [200, 70],
+            list(words), list(wl), ' ', measure(' '), 30,
+            max_central_width=130, src_is_cjk=False, tgt_is_cjk=False,
+            hyphenator=hyphenator, measure=measure,
+        )
+        lines = text.split('\n')
+        rejoined = ''.join(
+            ln[:-1] if ln.endswith('-') else ln for ln in lines
+        ).replace(' ', '')
+        self.assertEqual(rejoined, ''.join(words))

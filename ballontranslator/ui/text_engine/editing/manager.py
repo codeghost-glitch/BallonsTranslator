@@ -364,33 +364,50 @@ class TextPanel(Widget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
 
-def _mask_anchor(mask: np.ndarray):
-    """Deepest interior point of the mask: its pole of inaccessibility.
+# App display names -> pyphen language tags. pcfg.module.translate_target
+# holds display names ('English'), which pyphen rejects outright.
+PYPHEN_LANGS = {
+    'English': 'en',
+    '简体中文': 'zh',
+    '繁體中文': 'zh',
+    '日本語': 'ja',
+    '한국어': 'ko',
+    'Tiếng Việt': 'vi',
+    'čeština': 'cs',
+    'Nederlands': 'nl',
+    'Français': 'fr',
+    'Deutsch': 'de',
+    'magyar nyelv': 'hu',
+    'Italiano': 'it',
+    'Polski': 'pl',
+    'Português': 'pt',
+    'Brazilian Portuguese': 'pt',
+    'limba română': 'ro',
+    'русский язык': 'ru',
+    'Español': 'es',
+    'Türk dili': 'tr',
+    'украї́нська мо́ва': 'uk',
+    'Hindi': 'hi',
+    'Malayalam': 'ml',
+    'Tamil': 'ta',
+}
 
-    The pixel mean of a blobby contour can sit next to an edge, where any
-    text width fails the collision probes; the deepest point gives the
-    layout the most clearance in every direction.
 
-    >>> mask = np.zeros((9, 9), np.uint8)
-    >>> mask[1:8, 1:8] = 255
-    >>> _mask_anchor(mask)
-    (4, 4)
+def hyphenator_for_target(target: str):
+    """pyphen hyphenator for an app display language name, or None.
+
+    >>> hyphenator_for_target('English') is not None
+    True
+    >>> hyphenator_for_target('Unsupported Land') is None
+    True
     """
-    if mask is None or not mask.any():
+    if not target or target not in PYPHEN_LANGS:
         return None
-    # A perfectly solid crop has no background pixel and the transform
-    # degenerates; a zero border gives every interior pixel an edge.
-    padded = cv2.copyMakeBorder(
-        (mask > 0).astype(np.uint8), 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0
-    )
-    dist = cv2.distanceTransform(padded, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)[1:-1, 1:-1]
-    if not np.isfinite(dist).any() or float(dist.max()) <= 0:
+    try:
+        import pyphen
+        return pyphen.Pyphen(lang=pyphen.language_fallback(PYPHEN_LANGS[target]))
+    except Exception:
         return None
-    # On a wide mask every point of the midline ties for the maximum and
-    # minMaxLoc would hand back its leftmost pixel; the centroid of the
-    # tied set is the shape's true center.
-    ys, xs = np.nonzero(dist >= float(dist.max()) - 1e-6)
-    return int(round(float(xs.mean()))), int(round(float(ys.mean())))
 
 
 def _attribution_points(blk) -> np.ndarray:
@@ -1111,14 +1128,9 @@ class SceneTextManager(QObject):
         hyphenator = None
         hyphen_measure = None
         if not tgt_is_cjk:
-            try:
-                import pyphen
-                hyphenator = pyphen.Pyphen(
-                    lang=pyphen.language_fallback(pcfg.module.translate_target or 'en')
-                )
+            hyphenator = hyphenator_for_target(pcfg.module.translate_target)
+            if hyphenator is not None:
                 hyphen_measure = lambda s: text_size_func(s)[0]
-            except Exception:
-                hyphenator = None
 
         # Latin-script hyphenation: after the font settles, split tokens that
         # still exceed the line budget at linguistic points. CJK scripts wrap
@@ -1139,11 +1151,11 @@ class SceneTextManager(QObject):
             else:
                 centroid = [bounding_rect[2] // 2, bounding_rect[3] // 2]
             if poly_arr is not None and mask_ys.size:
-                # Lay out on the bubble's deepest point: the collision rule
-                # maximizes the font only when the canvas starts where it
-                # has the most clearance (mask coords are window-relative).
-                anchor = _mask_anchor(mask)
-                centroid = list(anchor) if anchor is not None else [int(mask_xs.mean()), int(mask_ys.mean())]
+                # Center on the bubble's bounding-box middle: the pixel mean
+                # drifts toward lopsided mass and the deepest point chases
+                # the thickest stroke; the bbox middle is what reads as
+                # "centered" in a balloon (mask coords are window-relative).
+                centroid = [(mb_x0 + mb_x1) // 2, (mb_y0 + mb_y1) // 2]
         else:
             max_central_width = np.inf
             centroid = [0, 0]
@@ -1392,11 +1404,8 @@ class SceneTextManager(QObject):
             _ys, _xs = np.nonzero(mask)
             if _ys.size == 0:
                 break
-            _anchor = _mask_anchor(mask)
-            if _anchor is None:
-                break
-            _cx = mask_xyxy[0] + float(_anchor[0])
-            _cy = mask_xyxy[1] + float(_anchor[1])
+            _cx = mask_xyxy[0] + (mb_x0 + mb_x1) / 2
+            _cy = mask_xyxy[1] + (mb_y0 + mb_y1) / 2
             _br = blkitem.absBoundingRect(qrect=True)
             _dx = _cx - (_br.x() + _br.width() / 2)
             _dy = _cy - (_br.y() + _br.height() / 2)
