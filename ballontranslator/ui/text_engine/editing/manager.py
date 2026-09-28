@@ -1343,11 +1343,16 @@ class SceneTextManager(QObject):
                     break
                 # Accepted: keep growing toward the outline when the
                 # starting font leaves the bubble mostly empty (the
-                # pre-fit heuristic only ever shrinks). Probes police
-                # every grown step and a failed look-ahead reverts below;
-                # no growth on the last two iterations, so the final
-                # layout always matches the applied font.
-                room = min(mb_w * 0.98 / w, mb_h * 0.98 / h)
+                # pre-fit heuristic only ever shrinks). Either axis may
+                # justify the step: a line-bound block in a tall balloon has
+                # to rise until the long token must hyphenate, and min()
+                # alone stops one pixel short of full width while balloon
+                # height sits unused. Probes police every grown step and a
+                # failed look-ahead reverts below; no growth on the last two
+                # iterations, so the final layout matches the applied font.
+                room_w = mb_w * 0.98 / w
+                room_h = mb_h * 0.98 / h
+                room = max(room_w, room_h)
                 if room > 1.03 and _ < 11:
                     good_text, good_xywh = new_text, xywh
                     good_font = blk_font.pointSizeF()
@@ -1462,6 +1467,13 @@ class SceneTextManager(QObject):
             blkitem.setFontSize(blk_font.pointSizeF())
             blkitem.document().setDefaultFont(blk_font)
         blkitem.squeezeBoundingRect()
+        LOGGER.debug(
+            'layout fit: font=%.2f lines=%d hyphen=%s check_fit=%s '
+            'autolayout_flag=%s resize=%.3f txt=%r',
+            blk_font.pointSizeF(), len(new_text.split(chr(10))),
+            ('-' in new_text), check_fit, self.auto_textlayout_flag,
+            resize_ratio, text[:36],
+        )
         # Center the settled text box on the balloon itself: the layout
         # anchors on the detection box center, which is off the balloon
         # center for most bubbles, and the item rect (not layout_text's xywh)
