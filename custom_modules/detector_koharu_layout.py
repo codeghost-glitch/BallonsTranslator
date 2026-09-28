@@ -3,6 +3,7 @@
 Model: https://huggingface.co/mayocream/koharu-layout-rfdetr-seg-2xl-1152
 """
 import logging
+import math
 import os
 import warnings
 from typing import List, Optional, Tuple
@@ -150,12 +151,12 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
         a, b, c = pts[k - 1], pts[k], pts[(k + 1) % n]
         cross = float((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
         reflex.append(cross * orient < 0)
-    # Deeply-overlapped pairs need neck chords up to 0.77*sqrt(area) (the
-    # blk5 diamond pair); single balloons falsely cut above 0.80 (a rounded
-    # balloon mid-body measured 0.820, a dent across a hexagon 0.846), so
-    # the cap sits between 0.77 and 0.81. Rejection is the safe side: a
-    # missed split keeps one outline, a false one breaks a block.
-    limit = 0.80 * float(np.sqrt(total))
+    # Neck chords over stored true pairs measure at most 0.773*sqrt(area)
+    # (the diamond pair); every observed false cut sits above 0.788 - a
+    # cloud balloon cut mid-body 0.795, a round balloon 0.820. The cap
+    # lives in that gap. Rejection is the safe side: a missed split keeps
+    # one outline, a false one cuts a block.
+    limit = 0.79 * float(np.sqrt(total))
     best = None
     for i in range(n - 2):
         if not reflex[i]:
@@ -206,6 +207,62 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
     return [best[1].astype(int).tolist(), best[2].astype(int).tolist()]
 
 
+def _outline_boundary(a: np.ndarray, b: np.ndarray):
+    """Cut line between two drawn balloons that abut or overlap.
+
+    Adjacent balloons stop at each other's stroke instead of crossing,
+    so there is no contour intersection to use; the cut runs through the
+    closest approach of the two contours, perpendicular to it - along
+    the contact line itself. The line merger glues boxes straddling that
+    contact, putting two balloons' speech in one block; this chord is
+    what the seam cut separates them by.
+    """
+    pa = np.asarray(a, np.float32)
+    pb = np.asarray(b, np.float32)
+    # closest pair of vertices (balloons are ~50 points; naive is fine)
+    best_d2, best_p, best_q = None, None, None
+    for p in pa:
+        d2 = ((pb - p) ** 2).sum(axis=1)
+        k = int(np.argmin(d2))
+        if best_d2 is None or d2[k] < best_d2:
+            best_d2, best_p, best_q = float(d2[k]), p, pb[k]
+    if best_p is None:
+        return None
+    # Direction of the contact: average of the two contours' local
+    # tangents at the meeting points. Centroid axes lie when one balloon
+    # sits lower than the other, and the gap vector points across the
+    # contact, not along it.
+    i = int(np.argmin(((pa - best_p) ** 2).sum(axis=1)))
+    j = int(np.argmin(((pb - best_q) ** 2).sum(axis=1)))
+    ta = pa[(i + 1) % len(pa)] - pa[i]
+    tb = pb[(j + 1) % len(pb)] - pb[j]
+    na_, nb_ = float(np.hypot(ta[0], ta[1])), float(np.hypot(tb[0], tb[1]))
+    if na_ < 1e-6 or nb_ < 1e-6:
+        return None
+    ta, tb = ta / na_, tb / nb_
+    if float(np.dot(ta, tb)) < 0:
+        tb = -tb                            # contours may wind opposite
+    dvec = (ta + tb) / 2
+    nvec = float(np.hypot(dvec[0], dvec[1]))
+    if nvec < 1e-6:
+        return None
+    px, py = float(dvec[0] / nvec), float(dvec[1] / nvec)
+    mx, my = (best_p[0] + best_q[0]) / 2, (best_p[1] + best_q[1]) / 2
+    # length: the bbox-overlap extent projected on the contact direction
+    ax, ay, aw, ah = cv2.boundingRect(pa)
+    bx, by, bw, bh = cv2.boundingRect(pb)
+    ox0, oy0 = max(ax, bx), max(ay, by)
+    ox1, oy1 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+    corners = np.array([[ox0, oy0], [ox1, oy0], [ox1, oy1], [ox0, oy1]], np.float32)
+    proj = corners @ np.array([px, py], np.float32)
+    length = float(proj.max() - proj.min())
+    if length < 8:
+        return None
+    half = length / 2
+    return ((float(mx - px * half), float(my - py * half)),
+            (float(mx + px * half), float(my + py * half)))
+
+
 def _cut_rect(x1, y1, x2, y2, a, b):
     """Split an axis-aligned box across the seam line through points a, b.
 
@@ -249,7 +306,8 @@ def _cut_rect(x1, y1, x2, y2, a, b):
     return ([x1, y1, x2 - x1, cut - y1], [x1, cut, x2 - x1, y2 - cut])
 
 
-def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int) -> List:
+def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int,
+                        outlines: List = ()) -> List:
     """Cut blocks straddling a split pair's seam, one block per bubble.
 
     Two joined bubbles each carry their own text, but the text head and the
@@ -282,6 +340,10 @@ def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int) -> Lis
             side = d[0] * (centroid[1] - a[1]) - d[1] * (centroid[0] - a[0])
             sides.append((side, arr))
         prepared.append((a, b, d, sides))
+    outline_boxes = []
+    for arr in outlines:
+        bx, by, bw, bh = cv2.boundingRect(np.asarray(arr, np.float32))
+        outline_boxes.append((bx, by, bx + bw, by + bh))
     out = []
     for blk in blk_list:
         boxes = [blk]
@@ -295,15 +357,16 @@ def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int) -> Lis
                     continue
                 kept = []
                 for hx, hy, hw, hh in halves:
-                    cx, cy = hx + hw / 2, hy + hh / 2
-                    side = d[0] * (cy - a[1]) - d[1] * (cx - a[0])
-                    own = next((arr for s, arr in sides if s * side > 0), None)
-                    # A half kept only by a sliver of overlap would mint an
-                    # empty block; require a corner of the half inside its
-                    # own bubble.
-                    if own is None or not any(
-                        cv2.pointPolygonTest(own, (float(px), float(py)), False) >= 0
-                        for px, py in ((hx, hy), (hx + hw, hy), (hx, hy + hh), (hx + hw, hy + hh))
+                    # A half that no balloon reaches would mint an empty
+                    # block. Overlap with any outline, not just the seam's
+                    # pair: a cut between two balloons often frees a third
+                    # balloon's run, and glued boxes extend past their own
+                    # bubble's edge, so corner or centre tests on the seam
+                    # pair alone reject real cuts.
+                    if outline_boxes and not any(
+                        min(hx + hw, bx2) - max(hx, bx0) >= 10
+                        and min(hy + hh, by2) - max(hy, by0) >= 10
+                        for bx0, by0, bx2, by2 in outline_boxes
                     ):
                         kept = None
                         break
@@ -742,6 +805,23 @@ class KoharuLayoutDetector(TextDetectorBase):
                 else:
                     bubble_outlines.append(item['pts'])
             proj.set_bubble_outlines(page, bubble_outlines)
+            # Also cut where two drawn balloons meet: the line merger glues
+            # boxes straddling neighbouring balloons (three runs across two
+            # balloons landed in one 414px box), and a split instance has no
+            # crossing to cut along. The cutter's 25% share guard keeps
+            # slivers from appearing here.
+            for i in range(len(bubble_outlines)):
+                for j in range(i + 1, len(bubble_outlines)):
+                    a = np.asarray(bubble_outlines[i], np.float32)
+                    b = np.asarray(bubble_outlines[j], np.float32)
+                    ax, ay, aw, ah = cv2.boundingRect(a)
+                    bx, by, bw2, bh2 = cv2.boundingRect(b)
+                    if (min(ax + aw, bx + bw2) - max(ax, bx)) < 4 or \
+                       (min(ay + ah, by + bh2) - max(ay, by)) < 4:
+                        continue
+                    chord = _outline_boundary(a, b)
+                    if chord is not None:
+                        seams.append((chord[0], chord[1], [a.tolist(), b.tolist()]))
 
         blk_list = []
         if not detected_items:
@@ -762,7 +842,7 @@ class KoharuLayoutDetector(TextDetectorBase):
 
         # Cut after line merging (merging pre-cut boxes would re-join them),
         # so each bubble of a split pair keeps its own block and OCR read.
-        blk_list = _seam_split_blocks(blk_list, seams, im_w, im_h)
+        blk_list = _seam_split_blocks(blk_list, seams, im_w, im_h, bubble_outlines)
 
         # Snapshot the detection box: TextBlkItem init rewrites block lines
         # from the stored rich text, and bounding_rect() would then return
