@@ -1137,16 +1137,6 @@ class SceneTextManager(QObject):
             if hyphenator is not None:
                 hyphen_measure = lambda s: text_size_func(s)[0]
 
-        # Latin-script hyphenation: after the font settles, split tokens that
-        # still exceed the line budget at linguistic points. CJK scripts wrap
-        # per character and never hyphenate.
-        if not tgt_is_cjk and words:
-            budget = mb_w if mb_w > 0 else mask.shape[1]
-            words, wl_list = hyphenate_long_words(
-                words, wl_list, lambda s: text_size_func(s)[0],
-                pcfg.module.translate_target, budget
-            )
-
         max_central_width = np.inf
         if fmt.alignment == 1:
             if len(blkitem.blk) > 0:
@@ -1215,100 +1205,152 @@ class SceneTextManager(QObject):
         # them as off-mask makes an in-balloon text look under-covered.
         k = max(5, int(np.sqrt(max(int((mask > 0).sum()), 1)) / 12))
         measure_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8)) if check_fit else mask
+        # Hyphen candidates are advisory, so the pristine lists stay here:
+        # each attempt rebuilds from them instead of inheriting a split that
+        # an earlier, larger font asked for.
+        base_words = list(words)
+        clean_wl = list(wl_list)
+
         for _ in range(13 if check_fit else 1):
-            new_text, xywh, start_from_top, adjust_xy = layout_text(
-                blkitem.blk,
-                mask,
-                mask_xyxy,
-                centroid,
-                list(words),
-                list(wl_list),
-                delimiter,
-                delimiter_len,
-                line_height,
-                0,
-                max_central_width,
-                src_is_cjk=src_is_cjk,
-                tgt_is_cjk=tgt_is_cjk,
-                ref_src_lines=ref_src_lines,
-                row_profile=row_profile,
-                hyphenator=hyphenator,
-                measure=hyphen_measure
-            )
+            # Hyphenation is advisory: candidates are derived from the
+            # pristine word list for the attempt that needs them, and the
+            # unhyphenated layout always runs first at each size. A split
+            # accepted early outlives the font that justified it and pins
+            # later, smaller attempts to lines the text no longer needs.
+            words = list(base_words)
+            wl_list = list(clean_wl)
+            attempts = [(words, wl_list)]
+            if check_fit and not tgt_is_cjk and base_words:
+                # pyphen wants a language code; translate_target is a
+                # display name, and language_fallback('English') returns
+                # None, which the helper's own guard turns into a silent
+                # no-op. The budget is the width the wrap applies, not the
+                # bounding box, so a word measured here cannot pass the
+                # gate and still overrun its line.
+                hy_words, hy_wl = hyphenate_long_words(
+                    base_words, clean_wl, lambda s: text_size_func(s)[0],
+                    PYPHEN_LANGS.get(pcfg.module.translate_target, 'en'),
+                    float(max_central_width) if max_central_width < np.inf
+                    else float(mask.shape[1]),
+                )
+                if hy_words != base_words:
+                    attempts.append((hy_words, hy_wl))
+
+            accepted = False
+            for attempt_index, (attempt_words, attempt_wl) in enumerate(attempts):
+                new_text, xywh, start_from_top, adjust_xy = layout_text(
+                    blkitem.blk,
+                    mask,
+                    mask_xyxy,
+                    centroid,
+                    list(attempt_words),
+                    list(attempt_wl),
+                    delimiter,
+                    delimiter_len,
+                    line_height,
+                    0,
+                    max_central_width,
+                    src_is_cjk=src_is_cjk,
+                    tgt_is_cjk=tgt_is_cjk,
+                    ref_src_lines=ref_src_lines,
+                    row_profile=row_profile,
+                    hyphenator=hyphenator,
+                    measure=hyphen_measure
+                )
+                if not check_fit:
+                    break
+                x, y, w, h = xywh
+                lx, ly = x - mask_xyxy[0], y - mask_xyxy[1]
+                inside = 0 <= lx and 0 <= ly and lx + w <= mask.shape[1] and ly + h <= mask.shape[0]
+                frac = float((measure_mask[ly:ly + h, lx:lx + w] > 0).mean()) if inside and h > 0 and w > 0 else -1.0
+                # Fit target: the canvas must be inside the window with most of
+                # its area on the mask. Shrink until coverage reaches the target
+                # or stops improving (glyph holes in the source image, irregular
+                # balloon shapes) - a fixed bbox-plus-partial-coverage rule let
+                # up to 40% of the text hang outside round balloons.
+                if poly_arr is not None:
+                    # Collision with the detector outline, per rendered line: the
+                    # first word of a line lands before any width cap runs, and a
+                    # bounding box around curved text always has corners outside
+                    # the outline - so probe each line's own rect (corners plus
+                    # edge midpoints; non-convex dents slip between corners).
+                    line_texts = new_text.split('\n')
+                    line_wl = [text_size_func(t)[0] for t in line_texts]
+                    if fmt.alignment == 1:
+                        line_rects = [
+                            (x + (w - lw) // 2, y + i * line_height, lw, line_height)
+                            for i, lw in enumerate(line_wl)
+                        ]
+                    elif fmt.alignment == 2:
+                        line_rects = [
+                            (x + w - lw, y + i * line_height, lw, line_height)
+                            for i, lw in enumerate(line_wl)
+                        ]
+                    else:
+                        line_rects = [
+                            (x, y + i * line_height, lw, line_height)
+                            for i, lw in enumerate(line_wl)
+                        ]
+                    clear = True
+                    for rx, ry, rw, rh in line_rects:
+                        # One-pixel inset: the rendered line box carries a pixel
+                        # of padding the layout rows do not, so a corner landing
+                        # exactly on the outline would spill in the render.
+                        ix0, iy0 = rx + 1, ry + 1
+                        ix1, iy1 = rx + max(rw - 1, 1), ry + max(rh - 1, 1)
+                        for qx, qy in (
+                            (ix0, iy0), (ix1, iy0), (ix0, iy1), (ix1, iy1),
+                            ((ix0 + ix1) // 2, iy0), ((ix0 + ix1) // 2, iy1),
+                            (ix0, (iy0 + iy1) // 2), (ix1, (iy0 + iy1) // 2),
+                        ):
+                            if cv2.pointPolygonTest(poly_arr, (float(qx), float(qy)), False) < 0:
+                                clear = False
+                                break
+                        if not clear:
+                            break
+                    accepted = inside and clear
+                else:
+                    accepted = inside and frac >= 0.9
+                if attempt_index == 0:
+                    base_state = (new_text, xywh, x, y, w, h, lx, ly, inside, frac)
+                if accepted:
+                    break
+
             if not check_fit:
                 break
-            x, y, w, h = xywh
-            lx, ly = x - mask_xyxy[0], y - mask_xyxy[1]
-            inside = 0 <= lx and 0 <= ly and lx + w <= mask.shape[1] and ly + h <= mask.shape[0]
-            frac = float((measure_mask[ly:ly + h, lx:lx + w] > 0).mean()) if inside and h > 0 and w > 0 else -1.0
-            # Fit target: the canvas must be inside the window with most of
-            # its area on the mask. Shrink until coverage reaches the target
-            # or stops improving (glyph holes in the source image, irregular
-            # balloon shapes) - a fixed bbox-plus-partial-coverage rule let
-            # up to 40% of the text hang outside round balloons.
-            if poly_arr is not None:
-                # Collision with the detector outline, per rendered line: the
-                # first word of a line lands before any width cap runs, and a
-                # bounding box around curved text always has corners outside
-                # the outline - so probe each line's own rect (corners plus
-                # edge midpoints; non-convex dents slip between corners).
-                line_texts = new_text.split('\n')
-                line_wl = [text_size_func(t)[0] for t in line_texts]
-                if fmt.alignment == 1:
-                    line_rects = [
-                        (x + (w - lw) // 2, y + i * line_height, lw, line_height)
-                        for i, lw in enumerate(line_wl)
-                    ]
-                elif fmt.alignment == 2:
-                    line_rects = [
-                        (x + w - lw, y + i * line_height, lw, line_height)
-                        for i, lw in enumerate(line_wl)
-                    ]
-                else:
-                    line_rects = [
-                        (x, y + i * line_height, lw, line_height)
-                        for i, lw in enumerate(line_wl)
-                    ]
-                clear = True
-                for rx, ry, rw, rh in line_rects:
-                    # One-pixel inset: the rendered line box carries a pixel
-                    # of padding the layout rows do not, so a corner landing
-                    # exactly on the outline would spill in the render.
-                    ix0, iy0 = rx + 1, ry + 1
-                    ix1, iy1 = rx + max(rw - 1, 1), ry + max(rh - 1, 1)
-                    for qx, qy in (
-                        (ix0, iy0), (ix1, iy0), (ix0, iy1), (ix1, iy1),
-                        ((ix0 + ix1) // 2, iy0), ((ix0 + ix1) // 2, iy1),
-                        (ix0, (iy0 + iy1) // 2), (ix1, (iy0 + iy1) // 2),
-                    ):
-                        if cv2.pointPolygonTest(poly_arr, (float(qx), float(qy)), False) < 0:
-                            clear = False
-                            break
-                    if not clear:
-                        break
-                if inside and clear:
-                    # Accepted: keep growing toward the outline when the
-                    # starting font leaves the bubble mostly empty (the
-                    # pre-fit heuristic only ever shrinks). Probes police
-                    # every grown step and a failed look-ahead reverts below;
-                    # no growth on the last two iterations, so the final
-                    # layout always matches the applied font.
-                    room = min(mb_w * 0.98 / w, mb_h * 0.98 / h)
-                    if room > 1.03 and _ < 11:
-                        good_text, good_xywh = new_text, xywh
-                        good_font = blk_font.pointSizeF()
-                        good_ratio = resize_ratio
-                        grow = min(room, 1.15)
-                        resize_ratio *= grow
-                        blk_font.setPointSizeF(good_font * grow)
-                        wl_list = (np.array(wl_list, np.float64) * grow).astype(np.int32).tolist()
-                        line_height = int(line_height * grow)
-                        delimiter_len = int(delimiter_len * grow)
-                        grew = True
-                        continue
+
+            if not accepted:
+                # Nobody accepted, so fall back to the unhyphenated geometry
+                # before measuring the shrink. A rejected split attempt is
+                # taller - hyphenation trades width for lines - and letting
+                # its height drive the step shrinks the font as if those
+                # extra lines had been chosen.
+                (new_text, xywh, x, y, w, h, lx, ly, inside, frac) = base_state
+
+            if accepted:
+                if poly_arr is None:
                     break
-            elif inside and frac >= 0.9:
+                # Accepted: keep growing toward the outline when the
+                # starting font leaves the bubble mostly empty (the
+                # pre-fit heuristic only ever shrinks). Probes police
+                # every grown step and a failed look-ahead reverts below;
+                # no growth on the last two iterations, so the final
+                # layout always matches the applied font.
+                room = min(mb_w * 0.98 / w, mb_h * 0.98 / h)
+                if room > 1.03 and _ < 11:
+                    good_text, good_xywh = new_text, xywh
+                    good_font = blk_font.pointSizeF()
+                    good_ratio = resize_ratio
+                    grow = min(room, 1.15)
+                    resize_ratio *= grow
+                    blk_font.setPointSizeF(good_font * grow)
+                    clean_wl = (np.array(clean_wl, np.float64) * grow).astype(np.int32).tolist()
+                    line_height = int(line_height * grow)
+                    delimiter_len = int(delimiter_len * grow)
+                    grew = True
+                    continue
                 break
+
             if poly_arr is None and inside and prev_frac >= 0 and frac - prev_frac < 0.015:
                 # Coverage plateau: the mask will not take more text. Outline
                 # fits terminate on the collision probes or the readability
@@ -1365,7 +1407,7 @@ class SceneTextManager(QObject):
                 break  # already at the floor
             resize_ratio *= scale
             blk_font.setPointSizeF(blk_font.pointSizeF() * scale)
-            wl_list = (np.array(wl_list, np.float64) * scale).astype(np.int32).tolist()
+            clean_wl = (np.array(clean_wl, np.float64) * scale).astype(np.int32).tolist()
             # Keep at least one pixel: int truncation can zero the row pitch
             # after enough shrink steps, which breaks every later layout.
             line_height = max(1, int(line_height * scale))

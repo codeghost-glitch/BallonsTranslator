@@ -9,6 +9,7 @@ import numpy as np
 from qtpy.QtGui import QFontMetricsF
 from qtpy.QtWidgets import QApplication
 
+import ballontranslator.ui.text_engine.editing.manager as M
 from ballontranslator.ui.text_engine.editing.manager import SceneTextManager
 from ballontranslator.ui.text_engine.item import TextBlkItem
 from ballontranslator.utils.config import pcfg
@@ -371,6 +372,92 @@ class TestAutoLayoutFit(unittest.TestCase):
         cx, cy = 250 - mask_xyxy[0], 180 - mask_xyxy[1]
         self.assertGreater(int(mask[cy, cx] > 0), 0)  # balloon center is on
         self.assertEqual(int(mask[0, 0] > 0), 0)       # window corner is off
+
+
+class TestAdvisoryHyphenation(unittest.TestCase):
+    """Hyphenation is a fallback: it must never change a layout that fits.
+
+    The split is derived per attempt and the unhyphenated layout runs
+    first, so a plain layout is byte-identical with the feature off, and
+    a split appears only where the unhyphenated text cannot fit at any
+    readable size.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.old_target = pcfg.module.translate_target
+        self.old_source = pcfg.module.translate_source
+        self.old_fntsize = pcfg.let_fntsize_flag
+        self.old_autolayout = pcfg.let_autolayout_flag
+        pcfg.module.translate_source = 'ja'
+        pcfg.module.translate_target = 'English'
+        pcfg.let_fntsize_flag = 0
+        pcfg.let_autolayout_flag = True
+
+    def tearDown(self) -> None:
+        pcfg.module.translate_source = self.old_source
+        pcfg.module.translate_target = self.old_target
+        pcfg.let_fntsize_flag = self.old_fntsize
+        pcfg.let_autolayout_flag = self.old_autolayout
+
+    @staticmethod
+    def _fit(img, poly, bbox, lines, text, font_size=40):
+        block = TextBlock(bbox)
+        block.set_lines_by_xywh(lines)
+        block.fontformat.font_size = font_size
+        item = TextBlkItem(block, 0)
+        stub = types.SimpleNamespace(
+            imgtrans_proj=types.SimpleNamespace(
+                img_array=img, current_img='001.png',
+                get_bubble_outlines=lambda page: [poly],
+            ),
+            pairwidget_list=[],
+            auto_textlayout_flag=True,
+        )
+        SceneTextManager.layout_textblk(stub, item, text=text)
+        rendered = item.toPlainText()
+        return item.font().pointSizeF(), rendered.split('\n'), rendered
+
+    def _wide_balloon(self):
+        img = np.full((IMG_H, IMG_W, 3), 90, np.uint8)
+        cv2.ellipse(img, (250, 180), (150, 100), 0, 0, 360, (255, 255, 255), -1)
+        poly = cv2.ellipse2Poly((250, 180), (150, 100), 0, 0, 360, 6).reshape(-1, 2).tolist()
+        return img, poly
+
+    def _narrow_balloon(self):
+        # 120x200: the compound still exceeds the line budget at the
+        # readability floor, so the unhyphenated layout can never pass.
+        img = np.full((IMG_H, IMG_W, 3), 90, np.uint8)
+        cv2.ellipse(img, (250, 180), (60, 100), 0, 0, 360, (255, 255, 255), -1)
+        poly = cv2.ellipse2Poly((250, 180), (60, 100), 0, 0, 360, 6).reshape(-1, 2).tolist()
+        return img, poly
+
+    def test_plain_text_is_identical_with_and_without(self) -> None:
+        img, poly = self._wide_balloon()
+        text = 'The station announced the delay to everyone waiting.'
+        with_h = self._fit(img, poly, [170, 130, 330, 230], [170, 130, 160, 100], text)
+        self.assertNotIn('-', with_h[2])
+
+        original = M.hyphenate_long_words
+        M.hyphenate_long_words = lambda w, wl, m, l, b: (w, wl)
+        try:
+            without = self._fit(img, poly, [170, 130, 330, 230], [170, 130, 160, 100], text)
+        finally:
+            M.hyphenate_long_words = original
+        self.assertEqual(with_h, without)
+
+    def test_split_used_only_when_unhyphenated_cannot_fit(self) -> None:
+        img, poly = self._narrow_balloon()
+        text = 'Donaudampfschiffahrtsgesellschaft'
+        size, lines, rendered = self._fit(
+            img, poly, [200, 140, 300, 220], [200, 140, 100, 80], text
+        )
+        self.assertIn('-', rendered)
+        self.assertGreater(len(lines), 1)
+        self.assertGreater(size, 4.5, 'accepted above the readability floor')
 
 
 if __name__ == '__main__':

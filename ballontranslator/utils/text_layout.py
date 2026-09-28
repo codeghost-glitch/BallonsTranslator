@@ -607,8 +607,14 @@ def hyphenate_long_words(
     max_width: int,
 ) -> Tuple[List[str], List[int]]:
     """Split Latin-script tokens wider than the line budget at linguistic
-    hyphen points, so one long word neither overruns its line nor forces the
-    whole block down to the readability floor.
+    hyphen points.
+
+    Candidates are advisory: the caller derives them per layout attempt from
+    its pristine word list and tries the unhyphenated layout first, so a
+    break that was not needed never survives into a passing layout. Tokens
+    shorter than five characters stay whole, and every break keeps at least
+    two characters on each side, which keeps single-syllable fragments out
+    of ordinary prose.
 
     Unknown languages fall back through pyphen's language mapping; without
     pyphen the input passes through unchanged. ``measure`` maps a string to
@@ -616,6 +622,10 @@ def hyphenate_long_words(
 
     >>> hyphenate_long_words(['OK'], [30], lambda s: len(s) * 10, 'en', 60)
     (['OK'], [30])
+    >>> hyphenate_long_words(['extraordinary'], [110], lambda s: len(s) * 10, 'en', 60)
+    (['ex-', 'traordinary'], [30, 110])
+    >>> hyphenate_long_words(['onto'], [400], lambda s: len(s) * 10, 'en', 60)
+    (['onto'], [400])
     """
     if not words or max_width <= 0:
         return words, wl_list
@@ -626,8 +636,14 @@ def hyphenate_long_words(
         return words, wl_list
     out_words, out_wl = [], []
     for word, width in zip(words, wl_list):
-        while width > max_width:
-            positions = [p for p in dic.positions(word) if 0 < p < len(word)]
+        # Balloon-tight fragment bounds: a two-character wing on either
+        # side is the smallest piece that still reads as part of a word.
+        min_prefix, min_suffix = 2, 2
+        while width > max_width and len(word) >= 5:
+            positions = [
+                p for p in dic.positions(word)
+                if min_prefix <= p <= len(word) - min_suffix
+            ]
             split = None
             for p in positions:
                 head_w = measure(word[:p] + '-')
