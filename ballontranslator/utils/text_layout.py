@@ -580,7 +580,7 @@ def layout_text(
     for line in lines:
         pos_x_lst.append(line.pos_x)
         pos_right_lst.append(max(line.pos_x, 0) + line.length)
-        concated_text.append(line.text)
+        concated_text.append(_join_hyphen_runs(line.text))
     concated_text = '\n'.join(concated_text)
 
     pos_x_lst = np.array(pos_x_lst)
@@ -604,6 +604,30 @@ def layout_text(
         abs_y = int(canvas_t + mask_xyxy[1])
 
     return concated_text, [abs_x, abs_y, canvas_w, canvas_h], start_from_top, adjust_xy
+
+
+def _join_hyphen_runs(line_text: str) -> str:
+    """Reassemble hyphen-split segments that landed on one line.
+
+    The wrap treats the pieces of one word as separate words, so it joins
+    them with spaces and carries a hyphen on every piece. Real hyphenation
+    shows the break only where the line actually ends there: interior
+    pieces merge silently and a trailing hyphen stays only at line end.
+
+    >>> _join_hyphen_runs("it's im- pos-")
+    "it's impos-"
+    >>> _join_hyphen_runs('im- pos- sible~~~!')
+    'impossible~~~!'
+    >>> _join_hyphen_runs('possible~~~!')
+    'possible~~~!'
+    """
+    merged = []
+    for token in line_text.split(' '):
+        if merged and merged[-1].endswith('-'):
+            merged[-1] = merged[-1][:-1] + token
+        else:
+            merged.append(token)
+    return ' '.join(merged)
 
 
 def hyphenate_long_words(
@@ -646,6 +670,10 @@ def hyphenate_long_words(
         # Balloon-tight fragment bounds: a two-character wing on either
         # side is the smallest piece that still reads as part of a word.
         min_prefix, min_suffix = 2, 2
+        # Cut the word into as many segments as it takes to fit the line.
+        # Segments that land on one line are joined back together at render
+        # (see _join_hyphen_runs); only a segment that actually ends the
+        # line shows its hyphen, so the extra cuts cost nothing visually.
         while width > max_width and len(word) >= 5:
             positions = [
                 p for p in dic.positions(word)
