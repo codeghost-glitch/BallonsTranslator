@@ -1162,6 +1162,7 @@ class SceneTextManager(QObject):
                 centroid[1] = int(abs_centroid[1] - mask_xyxy[1])
 
         row_profile = None
+        widest = 0.0
         if (poly_arr is not None and mb_w > 0
                 and abs(blkitem.blk.angle) == 0
                 and pcfg.let_shape_aware_layout):
@@ -1180,16 +1181,20 @@ class SceneTextManager(QObject):
             row_profile = row_width_profile(
                 poly_arr - window_origin, mb_y0, mb_y1 + 1
             )
-            # Wrap column: the widest row the outline offers. A single
-            # long line would otherwise use full width while the height
-            # stays empty, and growth becomes width-bound. A degenerate
-            # outline with no measurable row falls back to the mask box
-            # rather than budgeting the text at zero.
+            # Wrap column: the outline's widest row at 72%. Measured
+            # against professional lettering, median text/bubble width is
+            # 0.64 with 0.16-0.17 side margins per side; wrapping full
+            # width packs fill 0.81 with 0.09 margins, so text rides the
+            # balloon edge. The cap also feeds growth - a narrower canvas
+            # raises room_w, so the font climbs until the outline probes
+            # bind instead of stalling just under the width gate. A
+            # degenerate outline falls back to the mask box rather than
+            # budgeting the text at zero.
             widest = float(np.nanmax(
                 np.where(row_profile[1] > row_profile[0],
                          row_profile[1] - row_profile[0], 0.0)
             ))
-            max_central_width = widest if widest > 0 else float(mb_w)
+            max_central_width = widest * 0.72 if widest > 0 else float(mb_w)
 
         # Layout, then keep shrinking until the final canvas fits the balloon
         # mask: the ratio heuristic above is only a guess (its 0.6/0.7 floors
@@ -1241,8 +1246,12 @@ class SceneTextManager(QObject):
                 hy_words, hy_wl = hyphenate_long_words(
                     base_words, clean_wl, lambda s: text_size_func(s)[0],
                     PYPHEN_LANGS.get(pcfg.module.translate_target, 'en'),
-                    float(max_central_width) if max_central_width < np.inf
-                    else float(mask.shape[1]),
+                    # Split tokens against the full outline width, not the
+                    # wrapped column: a long token that must break fills the
+                    # balloon edge to edge (professional lettering does the
+                    # same - THERMO-METER spans the bubble), while ordinary
+                    # words still wrap at the narrower column.
+                    float(widest) if widest > 0 else float(mask.shape[1]),
                 )
                 if hy_words != base_words:
                     attempts.append((hy_words, hy_wl))
