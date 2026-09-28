@@ -1171,14 +1171,25 @@ class SceneTextManager(QObject):
             # without a fitted-ellipse fudge factor. The flag still turns
             # shape-aware budgeting off entirely, falling back to the mask
             # rectangle.
-            row_profile = row_width_profile(poly_arr, mb_y0, mb_y1 + 1)
+            # The outline is in page coordinates; lines are positioned in
+            # window coordinates (centroid subtracts mask_xyxy). Scan the
+            # outline shifted into the window or a block low on a tall page
+            # yields rows the outline never crosses: every row reads "no
+            # room" and the wrap budget becomes 0.0.
+            window_origin = np.array([mask_xyxy[0], mask_xyxy[1]], np.float32)
+            row_profile = row_width_profile(
+                poly_arr - window_origin, mb_y0, mb_y1 + 1
+            )
             # Wrap column: the widest row the outline offers. A single
             # long line would otherwise use full width while the height
-            # stays empty, and growth becomes width-bound.
-            max_central_width = float(np.nanmax(
+            # stays empty, and growth becomes width-bound. A degenerate
+            # outline with no measurable row falls back to the mask box
+            # rather than budgeting the text at zero.
+            widest = float(np.nanmax(
                 np.where(row_profile[1] > row_profile[0],
                          row_profile[1] - row_profile[0], 0.0)
             ))
+            max_central_width = widest if widest > 0 else float(mb_w)
 
         # Layout, then keep shrinking until the final canvas fits the balloon
         # mask: the ratio heuristic above is only a guess (its 0.6/0.7 floors

@@ -83,6 +83,8 @@ def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_leng
     >>> line = Line('word', 0, 0, 60)
     >>> line_is_valid(line, 80, 0, 100, 80, None, 0, 20)
     True
+    >>> line_is_valid(line, 80, 0, 0, 80, None, 0, 20)
+    False
     >>> prof = (np.array([20.0, 20.0, 20.0]), np.array([80.0, 80.0, 80.0]), 0)
     >>> line_is_valid(Line('word', 0, -10, 60), 80, 0, 100, 80, None, 0, 20, row_profile=prof)
     False
@@ -108,6 +110,11 @@ def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_leng
         _max_width = _max_width + delimiter_len * line.num_words
         max_width = min(max_width, _max_width)
 
+    if max_width <= 0:
+        # No budget: a stale outline row, a zero-width source line, or an
+        # empty profile. The line cannot grow, and the ratio comparison
+        # below would divide by it.
+        return False
     if new_len < max_width:
         return True
     else:

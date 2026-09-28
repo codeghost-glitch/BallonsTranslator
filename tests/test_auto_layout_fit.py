@@ -228,16 +228,22 @@ class TestAutoLayoutFit(unittest.TestCase):
         self.assertLessEqual(canvas_h, 120 + 5)
 
     def test_shape_aware_typesetting_follows_bubble_outline(self) -> None:
-        # With elliptical typesetting on, lines curve with the outline: the
-        # middle line runs widest, the edge lines stay short.
+        # With shape-aware typesetting on, lines curve with the outline: the
+        # middle line runs widest, the edge lines stay short - and the
+        # layout must actually be accepted, not pile onto the readability
+        # floor where single-word lines look curved by accident.
         pcfg.let_fntsize_flag = 0
         old_shape_aware = pcfg.let_shape_aware_layout
         pcfg.let_shape_aware_layout = True
         try:
             img = np.full((IMG_H, IMG_W, 3), 255, np.uint8)
+            # The narrow 95x60 balloon floors this text at every size: the
+            # unbreakable words overrun the edge rows and the probes never
+            # clear. 120x75 fits, which is what this test is about.
             poly = cv2.ellipse2Poly(
-                (BALLOON_CX, BALLOON_CY), (95, 60), 0, 0, 360, 30
+                (BALLOON_CX, BALLOON_CY), (120, 75), 0, 0, 360, 6
             ).tolist()
+            cv2.ellipse(img, (BALLOON_CX, BALLOON_CY), (120, 75), 0, 0, 360, (255, 255, 255), -1)
             block = TextBlock(BLOCK_BBOX)
             block.set_lines_by_xywh([
                 BLOCK_BBOX[0], BLOCK_BBOX[1],
@@ -259,9 +265,11 @@ class TestAutoLayoutFit(unittest.TestCase):
             self.assertGreaterEqual(len(lines), 3)
             fm = QFontMetricsF(item.font())
             widths = [fm.horizontalAdvance(ln) for ln in lines]
+            # Accepted: nowhere near the 40 * 0.15 readability floor.
+            self.assertGreater(item.font().pointSizeF(), 6.0)
             self.assertGreater(max(widths), widths[0])
             self.assertGreater(max(widths), widths[-1])
-            self.assertLessEqual(max(widths), 190 + 10)
+            self.assertLessEqual(max(widths), 240 + 10)
         finally:
             pcfg.let_shape_aware_layout = old_shape_aware
 
@@ -434,6 +442,21 @@ class TestAdvisoryHyphenation(unittest.TestCase):
         cv2.ellipse(img, (250, 180), (60, 100), 0, 0, 360, (255, 255, 255), -1)
         poly = cv2.ellipse2Poly((250, 180), (60, 100), 0, 0, 360, 6).reshape(-1, 2).tolist()
         return img, poly
+
+    def test_outline_budget_on_a_low_block_does_not_crash(self) -> None:
+        # Window rows are window-local (0..N) but the outline is in page
+        # coordinates. A block low on a tall page makes the two disjoint:
+        # every row reads "no room", the wrap budget becomes 0.0, and
+        # line_is_valid divides by zero.
+        img = np.full((1800, 500, 3), 90, np.uint8)
+        cv2.ellipse(img, (250, 1600), (150, 100), 0, 0, 360, (255, 255, 255), -1)
+        poly = cv2.ellipse2Poly((250, 1600), (150, 100), 0, 0, 360, 6).reshape(-1, 2).tolist()
+        size, lines, rendered = self._fit(
+            img, poly, [170, 1550, 330, 1650], [170, 1550, 160, 100],
+            'The station announced the delay to everyone waiting.',
+        )
+        self.assertTrue(rendered.strip(), 'text still laid out')
+        self.assertGreater(size, 0)
 
     def test_plain_text_is_identical_with_and_without(self) -> None:
         img, poly = self._wide_balloon()
