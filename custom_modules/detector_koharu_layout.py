@@ -151,9 +151,11 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
         cross = float((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
         reflex.append(cross * orient < 0)
     # Deeply-overlapped pairs need neck chords up to 0.77*sqrt(area) (the
-    # blk5 diamond pair); single balloons falsely cut at 0.85 (a dent-to-dent
-    # chord across a hexagon measured 0.846), so cap between the two.
-    limit = 0.82 * float(np.sqrt(total))
+    # blk5 diamond pair); single balloons falsely cut above 0.80 (a rounded
+    # balloon mid-body measured 0.820, a dent across a hexagon 0.846), so
+    # the cap sits between 0.77 and 0.81. Rejection is the safe side: a
+    # missed split keeps one outline, a false one breaks a block.
+    limit = 0.80 * float(np.sqrt(total))
     best = None
     for i in range(n - 2):
         if not reflex[i]:
