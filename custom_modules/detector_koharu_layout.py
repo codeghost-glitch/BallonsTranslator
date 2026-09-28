@@ -405,7 +405,8 @@ def _drop_contained_detections(items: List[dict]) -> List[dict]:
 
 
 def _nearby_mask_extent(
-    det_mask: Optional[np.ndarray], box: Tuple[int, int, int, int]
+    det_mask: Optional[np.ndarray], box: Tuple[int, int, int, int],
+    others: Tuple = (),
 ) -> Optional[Tuple[int, int, int, int]]:
     """Extent of the mask components plausibly belonging to one detection.
 
@@ -418,6 +419,9 @@ def _nearby_mask_extent(
     that slack still count, because the mask head routinely spills a few dozen
     pixels outside the box head.
 
+    Components whose centre sits on another detection belong to that
+    detection, not this one - two joined bubbles then stay two boxes.
+
     >>> import numpy as np
     >>> mask = np.zeros((64, 64), bool)
     >>> mask[10:20, 10:20] = True
@@ -428,6 +432,11 @@ def _nearby_mask_extent(
     (10, 10, 20, 20)
     >>> _nearby_mask_extent(None, (0, 0, 4, 4)) is None
     True
+    >>> spill = np.zeros((64, 64), bool)
+    >>> spill[10:20, 10:20] = True
+    >>> spill[40:50, 40:50] = True
+    >>> _nearby_mask_extent(spill, (8, 8, 22, 22), [(36, 36, 54, 54)])
+    (10, 10, 20, 20)
     """
     if det_mask is None or not det_mask.any():
         return None
@@ -446,6 +455,19 @@ def _nearby_mask_extent(
         dy = max(0, top - y2, y1 - bottom)
         if max(dx, dy) > slack:
             continue
+        if others:
+            # Seg masks bleed across to the neighbouring bubble's glyphs.
+            # Claiming that component stretches this box over the neighbour,
+            # the containment dedup reads the overlap as one duplicate run,
+            # and the smaller bubble's text is dropped - the bubble then
+            # never reaches OCR at all.
+            cx = (left + right) // 2
+            cy = (top + bottom) // 2
+            if any(
+                x1o <= cx <= x2o and y1o <= cy <= y2o
+                for x1o, y1o, x2o, y2o in others
+            ):
+                continue
         if extent is None:
             extent = [left, top, right, bottom]
         else:
@@ -627,8 +649,17 @@ class KoharuLayoutDetector(TextDetectorBase):
 
         detected_items = []
         bubble_candidates = []
+        text_boxes = []
         if dets is not None and len(dets) > 0:
             masks = dets.mask
+            for cls_id_, conf_, xyxy_ in zip(dets.class_id, dets.confidence, dets.xyxy):
+                c = int(cls_id_)
+                if c in class_thresholds and float(conf_) >= class_thresholds[c]:
+                    bx1, by1, bx2, by2 = xyxy_.astype(int)
+                    text_boxes.append((
+                        max(bx1, 0), max(by1, 0),
+                        min(bx2, im_w), min(by2, im_h),
+                    ))
             for i, (cls_id, conf) in enumerate(zip(dets.class_id, dets.confidence)):
                 cls_id = int(cls_id)
                 if cls_id == 2:
@@ -662,7 +693,9 @@ class KoharuLayoutDetector(TextDetectorBase):
                 # spill outside the box head, and the final dilation grows it
                 # another ksize pixels. Mask fragments far from this detection
                 # belong to another block, so they must not stretch the box.
-                extent = _nearby_mask_extent(det_mask, (x1, y1, x2, y2))
+                own_raw = (x1, y1, x2, y2)
+                others = tuple(b for b in text_boxes if b != own_raw)
+                extent = _nearby_mask_extent(det_mask, (x1, y1, x2, y2), others)
                 if extent is not None:
                     x1 = min(x1, extent[0])
                     y1 = min(y1, extent[1])
