@@ -449,9 +449,13 @@ class ProgramConfig(Config):
     show_source_text: bool = True
     show_trans_text: bool = True
     ocr_sublist: List = field(default_factory=lambda: list())
-    # Drops blocks whose OCR text carries no real language. It rewrites the
-    # page mask and the inpainted image, so it stays off unless asked for.
-    restore_ocr_empty: bool = False
+    # Drops blocks whose OCR text carries no real language (punctuation-only
+    # balloons: '……', '!!!!', empty OCR). On by default so those blocks (and
+    # the outlines around them) do not reach the exported image. Toggle
+    # "Remove empty textblocks" in the run pipeline to keep them instead;
+    # turning it off is the only way to preserve a punctuation-only balloon,
+    # which does rewrite the page mask and inpainted image when it runs.
+    restore_ocr_empty: bool = True
     pre_mt_sublist: List = field(default_factory=lambda: list())
     mt_sublist: List = field(default_factory=lambda: list())
     display_lang: str = field(default_factory=lambda: shared.DEFAULT_DISPLAY_LANG) # to always apply shared.DEFAULT_DISPLAY_LANG

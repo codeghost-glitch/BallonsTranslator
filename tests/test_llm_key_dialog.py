@@ -791,6 +791,14 @@ class LLMKeyDialogDedupTest(unittest.TestCase):
         self.assertTrue(ocr.called)
         self.assertEqual(project.pages['page-1'], [block])
 
+
+    def test_restore_ocr_empty_ships_on_by_default(self) -> None:
+        # Punctuation-only balloons ('……', '!!!!') should not reach the
+        # exported image out of the box; the run-pipeline checkbox is the
+        # opt-out. Assert the shipped default so it is not flipped back.
+        from ballontranslator.utils.config import ProgramConfig
+        self.assertTrue(ProgramConfig().restore_ocr_empty)
+
     def test_pipeline_drops_untranslatable_blocks_after_ocr(self):
         class PunctuationOCR(OCRBase):
             def _ocr_blk_list(self, _img, blk_list, *args, **kwargs):

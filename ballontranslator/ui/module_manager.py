@@ -1168,9 +1168,10 @@ class ImgtransThread(QThread):
                     self.ocr_counter += 1
 
                     # Blocks without real language (periods, ellipses, empty
-                    # OCR results) cannot be translated. Dropping them also
-                    # rewrites the mask and the inpainted image, so it stays
-                    # opt-in: the run pipeline exposes the switch.
+                    # OCR results) cannot be translated, so drop them (on by
+                    # default). Dropping also rewrites the mask and the
+                    # inpainted image; the run pipeline switch turns it off
+                    # to keep a punctuation-only balloon.
                     if pcfg.restore_ocr_empty:
                         blk_list_updated = []
                         for blk in blk_list:
