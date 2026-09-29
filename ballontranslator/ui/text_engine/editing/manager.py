@@ -428,6 +428,12 @@ def hyphenator_for_target(target: str) -> Optional['pyphen.Pyphen']:
         return None
 
 
+# Minimum distance, in pixels, that fitted text must keep from a balloon's
+# outline. A probe that only rejects points outside the polygon lets a
+# column settle flush against the curve, which reads as text kissing the
+# outline. This is the breathing room professional lettering leaves.
+OUTLINE_MARGIN = 3.0
+
 def _bubble_polygon_for(outlines, blk) -> Optional[List]:
     """Page polygon of the detected bubble holding this block's text.
 
@@ -1211,15 +1217,22 @@ class SceneTextManager(QObject):
             origin = blkitem.mapToParent(QPointF(0, 0))
             ox, oy = origin.x(), origin.y()
             for x, y, w, h in rects:
-                ix0, iy0 = x + ox + 1, y + oy + 1
-                ix1 = x + ox + max(w - 1, 1)
-                iy1 = y + oy + max(h - 1, 1)
+                # Probe the column's real rect (corners plus edge midpoints)
+                # and require every sampled point to sit OUTLINE_MARGIN
+                # inside the outline. Testing only for "not outside" let a
+                # column settle flush against the balloon's curve, which
+                # reads as text kissing the outline; the margin keeps the
+                # letterform visibly off the edge.
+                cx0, cy0 = x + ox, y + oy
+                cx1, cy1 = x + ox + w, y + oy + h
                 for qx, qy in (
-                    (ix0, iy0), (ix1, iy0), (ix0, iy1), (ix1, iy1),
-                    ((ix0 + ix1) / 2, iy0), ((ix0 + ix1) / 2, iy1),
-                    (ix0, (iy0 + iy1) / 2), (ix1, (iy0 + iy1) / 2),
+                    (cx0, cy0), (cx1, cy0), (cx0, cy1), (cx1, cy1),
+                    ((cx0 + cx1) / 2, cy0), ((cx0 + cx1) / 2, cy1),
+                    (cx0, (cy0 + cy1) / 2), (cx1, (cy0 + cy1) / 2),
                 ):
-                    if cv2.pointPolygonTest(poly_arr, (float(qx), float(qy)), False) < 0:
+                    if cv2.pointPolygonTest(
+                        poly_arr, (float(qx), float(qy)), True
+                    ) < OUTLINE_MARGIN:
                         return False
             return True
 
