@@ -344,6 +344,10 @@ class Canvas(QGraphicsScene):
         self.bubbleOutlineLayer.setBrush(QColor(30, 147, 229, 60))
         # Decorative only: never swallow mouse events meant for the layers below.
         self.bubbleOutlineLayer.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        # View-only toggle for the bubble outline overlay (right-click menu).
+        # Render state, deliberately not saved to shared config: hiding the
+        # overlay is a per-session viewing choice, not a project setting.
+        self._bubble_outlines_hidden = False
         self.textLayer = QGraphicsPixmapItem()
         self.orderBadgeLayer = QGraphicsRectItem()
         self.orderBadgeLayer.setZValue(100.0)
@@ -1607,6 +1611,14 @@ class Canvas(QGraphicsScene):
                 path.closeSubpath()
         self.bubbleOutlineLayer.setPath(path)
 
+    def toggle_bubble_outlines(self) -> None:
+        """Show/hide the detector bubble outline overlay (view-only)."""
+        self._bubble_outlines_hidden = not self._bubble_outlines_hidden
+        self.bubbleOutlineLayer.setVisible(not self._bubble_outlines_hidden)
+
+    def bubble_outlines_visible(self) -> bool:
+        return not self._bubble_outlines_hidden
+
     def updateCanvas(self) -> None:
         self.reset_brush_line()
         self.alpha_mask_edit_session.deactivate()
@@ -1734,6 +1746,11 @@ class Canvas(QGraphicsScene):
             layout_act = menu.addAction(self.tr("Auto layout"))
             angle_act = menu.addAction(self.tr("Reset Angle"))
             squeeze_act = menu.addAction(self.tr("Squeeze"))
+            outlines_act = menu.addAction(
+                self.tr("Show bubble outlines")
+                if self.bubble_outlines_visible()
+                else self.tr("Hide bubble outlines")
+            )
             menu.addSeparator()
             translate_act = menu.addAction(self.tr("translate"))
             ocr_act = menu.addAction(self.tr("OCR"))
@@ -1763,6 +1780,8 @@ class Canvas(QGraphicsScene):
                 self.reset_angle.emit()
             elif rst == squeeze_act:
                 self.squeeze_blk.emit()
+            elif rst == outlines_act:
+                self.toggle_bubble_outlines()
             elif rst == translate_act:
                 self.run_blktrans.emit(-1)
             elif rst == ocr_act:

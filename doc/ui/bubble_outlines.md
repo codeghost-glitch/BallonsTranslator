@@ -29,6 +29,11 @@ contract.
   and text layers, and refreshes from `updateCanvas()` — page switches and
   pipeline finish need no extra wiring. Headless mode has no canvas; outlines
   still persist in the project.
+- Visibility is a view-only toggle: the canvas right-click menu offers
+  "Hide bubble outlines" / "Show bubble outlines" (flips
+  `Canvas.bubbleOutlineLayer.setVisible`). It is render state, not saved to
+  shared config, and it persists across page switches and detect runs within
+  a session.
 - Auto layout consumes outlines as balloon geometry (attribution, collision,
   per-row width budgeting); that contract lives in
   [Text engine](text_engine.md#auto-layout-fit).

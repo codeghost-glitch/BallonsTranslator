@@ -125,6 +125,31 @@ class TestCanvasOutlineLayer(unittest.TestCase):
         canvas._refresh_bubble_outlines()
         self.assertTrue(canvas.bubbleOutlineLayer.path().isEmpty())
 
+    def test_visibility_toggle_flips_layer_and_survives_refresh(self):
+        from ballontranslator.ui.canvas import Canvas
+        proj = ProjImgTrans()
+        proj._image_info = {'001.png': {}}
+        proj.set_bubble_outlines('001.png', [[[10, 10], [50, 12], [46, 44], [12, 40]]])
+        canvas = Canvas()
+        canvas.imgtrans_proj = proj
+        proj.current_img = '001.png'
+        canvas._refresh_bubble_outlines()
+
+        self.assertTrue(canvas.bubble_outlines_visible())
+        self.assertTrue(canvas.bubbleOutlineLayer.isVisible())
+
+        canvas.toggle_bubble_outlines()
+        self.assertFalse(canvas.bubble_outlines_visible())
+        self.assertFalse(canvas.bubbleOutlineLayer.isVisible())
+
+        # A detect run / page switch rebuilds the path but must not resurface
+        # the overlay the user turned off.
+        canvas._refresh_bubble_outlines()
+        self.assertFalse(canvas.bubbleOutlineLayer.isVisible())
+
+        canvas.toggle_bubble_outlines()
+        self.assertTrue(canvas.bubbleOutlineLayer.isVisible())
+
 
 if __name__ == '__main__':
     unittest.main()
