@@ -483,6 +483,42 @@ class TestAdvisoryHyphenation(unittest.TestCase):
         self.assertGreater(len(lines), 1)
         self.assertGreater(size, 4.5, 'accepted above the readability floor')
 
+    def test_non_hyphenating_language_is_never_split(self) -> None:
+        # pyphen only models space-delimited scripts that use hyphens
+        # (Latin/Cyrillic/Greek). Arabic and Thai must be left whole: the
+        # old `PYPHEN_LANGS.get(target, 'en')` fallback handed them English
+        # rules and force-chopped them mid-word. The splitter is gated on the
+        # same validated hyphenator the line-breaker uses, so for these
+        # targets it must not run at all.
+        img, poly = self._narrow_balloon()
+        for target in ('العربية', 'ภาษาไทย'):
+            with self.subTest(target=target):
+                pcfg.module.translate_target = target
+                calls = []
+                original = M.hyphenate_long_words
+                M.hyphenate_long_words = (
+                    lambda w, wl, m, l, b: (calls.append(l), (w, wl))[1]
+                )
+                try:
+                    self._fit(img, poly, [200, 140, 300, 220],
+                              [200, 140, 100, 80], 'averyveryverylongunbrokentoken')
+                finally:
+                    M.hyphenate_long_words = original
+                self.assertEqual(calls, [], 'splitter ran for a non-hyphenating target')
+
+        # English (a real hyphenating target) still reaches the splitter, so
+        # the assertion above is not passing merely because the gate is dead.
+        pcfg.module.translate_target = 'English'
+        calls = []
+        original = M.hyphenate_long_words
+        M.hyphenate_long_words = lambda w, wl, m, l, b: (calls.append(l), (w, wl))[1]
+        try:
+            self._fit(img, poly, [200, 140, 300, 220],
+                      [200, 140, 100, 80], 'averyveryverylongunbrokentoken')
+        finally:
+            M.hyphenate_long_words = original
+        self.assertTrue(calls, 'English target must still reach the splitter')
+
 
 class TestSharedOutlineFit(unittest.TestCase):
     """Blocks sharing one outline must not grow through each other.

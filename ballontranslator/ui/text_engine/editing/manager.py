@@ -1355,7 +1355,16 @@ class SceneTextManager(QObject):
             words = list(base_words)
             wl_list = list(clean_wl)
             attempts = [(words, wl_list)]
-            if check_fit and not tgt_is_cjk and base_words:
+            # Gate on the same validated signal the line-breaker uses
+            # (hyphenator is not None only for a target that is in
+            # PYPHEN_LANGS *and* has real pyphen break rules), so a
+            # language that does not hyphenate is never split. The previous
+            # `PYPHEN_LANGS.get(target, 'en')` handed English rules to any
+            # unlisted target (Arabic, Thai, ...), chopping a connected
+            # script or a spaceless sentence at arbitrary characters; CJK is
+            # already excluded upstream. With this gate the target is
+            # guaranteed to be in the table, so the lookup always resolves.
+            if check_fit and hyphenator is not None and base_words:
                 # pyphen wants a language code; translate_target is a
                 # display name, and language_fallback('English') returns
                 # None, which the helper's own guard turns into a silent
@@ -1364,7 +1373,10 @@ class SceneTextManager(QObject):
                 # gate and still overrun its line.
                 hy_words, hy_wl = hyphenate_long_words(
                     base_words, clean_wl, lambda s: text_size_func(s)[0],
-                    PYPHEN_LANGS.get(pcfg.module.translate_target, 'en'),
+                    # hyphenator is not None => the target is in the table,
+                    # so this always yields a real pyphen code (never the
+                    # 'en' that would mis-split a non-hyphenating script).
+                    PYPHEN_LANGS[pcfg.module.translate_target],
                     # Split tokens against the full outline width, not the
                     # wrapped column: a long token that must break fills the
                     # balloon edge to edge (professional lettering does the
