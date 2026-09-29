@@ -14,6 +14,11 @@ except Exception:
     HAS_PYPHEN = False
 
 
+
+# text_layout marks the breaks it makes with a private sentinel; the split
+# results carry it until _join_hyphen_runs restores the visible hyphen.
+BREAK = '\x1e'
+
 class TestHyphenateLongWords(unittest.TestCase):
 
     def test_short_tokens_pass_through(self) -> None:
@@ -31,9 +36,9 @@ class TestHyphenateLongWords(unittest.TestCase):
             ['unquestionably'], [140], measure, 'en', 80
         )
         self.assertGreater(len(words), 1)
-        self.assertTrue(words[0].endswith('-'))
+        self.assertTrue(words[0].endswith(BREAK))
         self.assertEqual(
-            ''.join(w[:-1] if w.endswith('-') else w for w in words),
+            ''.join(w[:-1] if w.endswith(BREAK) else w for w in words),
             'unquestionably',
         )
         self.assertEqual(wl, [measure(w) for w in words])
@@ -126,6 +131,26 @@ class TestOpticalHyphenation(unittest.TestCase):
         rejoined = ''.join(ln[:-1] if ln.endswith('-') else ln for ln in lines)
         rejoined = rejoined.replace(' ', '')
         self.assertEqual(rejoined, ''.join(words))
+
+    def test_translator_hyphen_is_not_swallowed(self) -> None:
+        # A '-' the translator typed ends a real token. Treating it as one
+        # of our own breaks deleted it and welded the words together.
+        import numpy as np
+        from ballontranslator.utils.textblock import TextBlock
+        from ballontranslator.utils.text_layout import layout_text
+
+        measure = lambda s: len(s) * 10
+        blk = TextBlock(xyxy=[0, 0, 100, 40])
+        blk.set_lines_by_xywh([0, 0, 100, 40])
+        mask = np.full((120, 300), 255, np.uint8)
+        words = ['fine-', "I'll", 'go']
+        wl = [measure(w) for w in words]
+        text, _, _, _ = layout_text(
+            blk, mask, [0, 0, 300, 120], [10, 60],
+            list(words), list(wl), ' ', measure(' '), 30,
+            max_central_width=300, src_is_cjk=False, tgt_is_cjk=False,
+        )
+        self.assertEqual(text, "fine- I'll go")
 
     def test_hyphenation_off_without_hyphenator(self) -> None:
         import numpy as np

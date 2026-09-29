@@ -39,7 +39,7 @@ class Line:
         self.pos_x += self.spacing
         self.spacing = 0
 
-def row_width_profile(poly_arr, y_start: int, y_end: int):
+def row_width_profile(poly_arr: np.ndarray, y_start: int, y_end: int) -> Tuple[np.ndarray, np.ndarray, int]:
     """Horizontal extent of a polygon at every integer row, exactly.
 
     Line budgets read from this profile follow the real outline, so
@@ -123,6 +123,14 @@ def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_leng
         else:
             return False
 
+# Stands in for the hyphen at a break this module made. A '-' the
+# translator typed is a real character and must survive untouched, so the
+# joiner can only swallow a break it can see the mark on. It never reaches
+# the canvas: _join_hyphen_runs runs on every rendered line and drops the
+# mark, restoring a visible hyphen where the break ends the line.
+_HYPHEN_BREAK = '\x1e'
+
+
 def _hyphen_head_for_line(
     line: Line, word: str, hyphenator, measure, delimiter_len,
     line_no: int, max_width, words_length, srcline_wlist, line_height,
@@ -139,12 +147,13 @@ def _hyphen_head_for_line(
     for p in hyphenator.positions(word):
         if p <= 0 or p >= len(word):
             continue
-        head = word[:p] + '-'
-        hw = measure(head)
+        bare = word[:-1] if word.endswith(_HYPHEN_BREAK) else word
+        head = bare[:p] + _HYPHEN_BREAK
+        hw = measure(bare[:p] + '-')
         if line_is_valid(line, line.length + hw + delimiter_len, delimiter_len,
                          max_width, words_length, srcline_wlist, line_no,
                          line_height, ref_src_lines, row_profile):
-            best = (head, hw, word[p:], measure(word[p:]))
+            best = (head, hw, bare[p:], measure(bare[p:]))
         elif best is not None:
             break  # positions ascend: later heads are only wider
     return best
@@ -610,23 +619,29 @@ def _join_hyphen_runs(line_text: str) -> str:
     """Reassemble hyphen-split segments that landed on one line.
 
     The wrap treats the pieces of one word as separate words, so it joins
-    them with spaces and carries a hyphen on every piece. Real hyphenation
-    shows the break only where the line actually ends there: interior
-    pieces merge silently and a trailing hyphen stays only at line end.
+    them with spaces and marks every piece it broke with ``_HYPHEN_BREAK``
+    (the examples spell it as an escape). Only a mark is swallowed:
+    interior pieces merge silently, a mark left at line end becomes a real
+    hyphen, and a '-' the translator typed is left alone.
 
-    >>> _join_hyphen_runs("it's im- pos-")
+    >>> _join_hyphen_runs("it's im\x1e pos\x1e")
     "it's impos-"
-    >>> _join_hyphen_runs('im- pos- sible~~~!')
+    >>> _join_hyphen_runs('im\x1e pos\x1e sible~~~!')
     'impossible~~~!'
     >>> _join_hyphen_runs('possible~~~!')
     'possible~~~!'
+    >>> _join_hyphen_runs("fine- I'll go")
+    "fine- I'll go"
     """
     merged = []
     for token in line_text.split(' '):
-        if merged and merged[-1].endswith('-'):
+        if merged and merged[-1].endswith(_HYPHEN_BREAK):
             merged[-1] = merged[-1][:-1] + token
         else:
             merged.append(token)
+    if merged and merged[-1].endswith(_HYPHEN_BREAK):
+        # The line ends here, so the break is a real line-ending hyphen.
+        merged[-1] = merged[-1][:-1] + '-'
     return ' '.join(merged)
 
 
@@ -637,7 +652,7 @@ def hyphenate_long_words(
     lang: str,
     max_width: int,
 ) -> Tuple[List[str], List[int]]:
-    """Split Latin-script tokens wider than the line budget at linguistic
+    r"""Split Latin-script tokens wider than the line budget at linguistic
     hyphen points.
 
     Candidates are advisory: the caller derives them per layout attempt from
@@ -654,7 +669,7 @@ def hyphenate_long_words(
     >>> hyphenate_long_words(['OK'], [30], lambda s: len(s) * 10, 'en', 60)
     (['OK'], [30])
     >>> hyphenate_long_words(['extraordinary'], [110], lambda s: len(s) * 10, 'en', 60)
-    (['ex-', 'traordinary'], [30, 110])
+    (['ex\x1e', 'traordinary'], [30, 110])
     >>> hyphenate_long_words(['onto'], [400], lambda s: len(s) * 10, 'en', 60)
     (['onto'], [400])
     """
@@ -686,9 +701,8 @@ def hyphenate_long_words(
                     split = p  # widest head that still fits a line
             if split is None:
                 break  # no linguistic point fits (URLs): keep the token whole
-            head = word[:split] + '-'
-            out_words.append(head)
-            out_wl.append(measure(head))
+            out_words.append(word[:split] + _HYPHEN_BREAK)
+            out_wl.append(measure(word[:split] + '-'))
             word = word[split:]
             width = measure(word)
         out_words.append(word)

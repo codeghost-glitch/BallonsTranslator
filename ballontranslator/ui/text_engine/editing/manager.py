@@ -398,7 +398,12 @@ PYPHEN_LANGS = {
 }
 
 
-def hyphenator_for_target(target: str):
+# One warning per session: layout runs this lookup for every block, and a
+# missing pyphen is a setup problem, not a per-block event.
+_pyphen_warned = False
+
+
+def hyphenator_for_target(target: str) -> Optional['pyphen.Pyphen']:
     """pyphen hyphenator for an app display language name, or None.
 
     >>> hyphenator_for_target('English') is not None
@@ -408,10 +413,17 @@ def hyphenator_for_target(target: str):
     """
     if not target or target not in PYPHEN_LANGS:
         return None
+    global _pyphen_warned
     try:
         import pyphen
         return pyphen.Pyphen(lang=pyphen.language_fallback(PYPHEN_LANGS[target]))
-    except Exception:
+    except Exception as e:
+        if not _pyphen_warned:
+            _pyphen_warned = True
+            LOGGER.warning(
+                'pyphen unavailable (%s); long words overflow their line '
+                'instead of hyphenating. Install it with: pip install pyphen', e,
+            )
         return None
 
 
@@ -456,6 +468,60 @@ def _bubble_polygon_for(proj, blk) -> Optional[List]:
                 best_depth = depth
                 best = poly
     return best if best_depth >= 0 else None
+
+
+def _block_xyxy(blk) -> List:
+    """Detection box when the detector recorded one, else the block box.
+
+    The detection box stays put until the next detect run, so shared
+    outlines split on stable geometry instead of a box an earlier layout
+    pass already moved.
+
+    >>> blk = TextBlock([10, 20, 40, 80])
+    >>> blk.set_lines_by_xywh([10, 20, 30, 60])
+    >>> _block_xyxy(blk)
+    [10, 20, 40, 80]
+    """
+    det = getattr(blk, '_detected_bbox', None)
+    if det:
+        x, y, w, h = det
+    else:
+        x, y, w, h = blk.bounding_rect()
+    return [int(x), int(y), int(x + w), int(y + h)]
+
+
+def _shared_outline_window(window: List, blk, siblings: List) -> List:
+    """Fit window for one block of an outline several blocks share.
+
+    Every block enlarges its detection box into a window three times its
+    size, so neighbouring columns inside one balloon get overlapping
+    windows and both grow through the middle: the two columns of one
+    balloon came out 57 px inside each other. Each block keeps the half of
+    its window up to the midpoint toward every sibling separated on that
+    axis. A sibling that overlaps this box on an axis - text stacked in
+    the same column - leaves that axis alone. A split that empties the
+    window needs no special case: the caller keeps the unsplit band.
+
+    >>> class Block:
+    ...     _detected_bbox = [100, 0, 40, 50]
+    >>> class Sibling:
+    ...     _detected_bbox = [0, 0, 60, 50]
+    >>> _shared_outline_window([0, 0, 300, 60], Block(), [Sibling()])
+    [80, 0, 300, 60]
+    """
+    x1, y1, x2, y2 = window
+    bx1, by1, bx2, by2 = _block_xyxy(blk)
+    for other in siblings:
+        ox1, oy1, ox2, oy2 = _block_xyxy(other)
+        if ox2 <= bx1:
+            x1 = max(x1, (ox2 + bx1) // 2)
+        elif ox1 >= bx2:
+            x2 = min(x2, (ox1 + bx2) // 2)
+        if oy2 <= by1:
+            y1 = max(y1, (oy2 + by1) // 2)
+        elif oy1 >= by2:
+            y2 = min(y2, (oy1 + by2) // 2)
+    return [x1, y1, x2, y2]
 
 
 class SceneTextManager(QObject):
@@ -1006,6 +1072,11 @@ class SceneTextManager(QObject):
             return
 
         bubble = None
+        # Page-space centre of the axis a shared outline gave this block the
+        # whole balloon on: every holder of that outline lines up on it, so
+        # two side-by-side runs share one axis instead of following the
+        # lobes of an asymmetric balloon. [None, None] until a split sets it.
+        released_axis_centre = [None, None]
         if mask is None:
             im_h, im_w = img.shape[:2]
             # Fit against the detection box, not the item rect: squeeze and
@@ -1047,23 +1118,55 @@ class SceneTextManager(QObject):
                     # bubble. The detection-box window clips balloons larger
                     # than the box, and the clipped bbox caps growth early.
                     # A polygon holding several blocks is a joined
-                    # multi-bubble; its window band keeps each block near
-                    # its own text instead of re-centering both on the seam.
-                    # Holders = blocks whose deepest containment IS this
+                    # multi-bubble: each block fits against a band of it
+                    # instead of re-centering on the seam.
+                    # Owners = blocks whose deepest containment IS this
                     # polygon: merely touching an overlapping neighbour must
                     # not demote a single-owner outline to the clipped band.
+                    # One attribution pass feeds both the count and the split
+                    # below; get_bubble_outlines deep-copies the record.
                     page_blocks = getattr(self.imgtrans_proj, 'pages', None) or {}
                     page_blocks = page_blocks.get(self.imgtrans_proj.current_img, [])
-                    holders = sum(
-                        1 for other in page_blocks
+                    owners = [
+                        other for other in page_blocks
                         if _bubble_polygon_for(self.imgtrans_proj, other) == bubble
-                    )
-                    if holders <= 1:
+                    ]
+                    if len(owners) <= 1:
                         bx, by, bw, bh = cv2.boundingRect(np.asarray(bubble, np.int32))
                         mask_xyxy = [bx, by, bx + bw, by + bh]
                         mask = poly_mask[by:by + bh, bx:bx + bw]
                         ballon_area = int(mask.nonzero()[0].size)
                     else:
+                        # The enlarged windows overlap, so the band alone
+                        # does not keep neighbours apart: each block also
+                        # gives up the half of its window toward every
+                        # sibling, which is what stops both from growing
+                        # through the middle of the balloon.
+                        siblings = [other for other in owners if other is not blkitem.blk]
+                        px1, py1, px2, py2 = _shared_outline_window(mask_xyxy, blkitem.blk, siblings)
+                        # The split guards one axis only. On the other the
+                        # blocks are not competing, and keeping each own
+                        # detection window there staggers two side-by-side
+                        # runs vertically instead of centring them in the
+                        # balloon - they still cannot cross the split, which
+                        # the band and the collision probes enforce.
+                        split_x = (px1, px2) != (mask_xyxy[0], mask_xyxy[2])
+                        split_y = (py1, py2) != (mask_xyxy[1], mask_xyxy[3])
+                        if split_x != split_y:
+                            bx, by, bw, bh = cv2.boundingRect(np.asarray(bubble, np.int32))
+                            if split_x:
+                                py1, py2 = by, by + bh
+                                released_axis_centre[1] = by + bh / 2
+                            else:
+                                px1, px2 = bx, bx + bw
+                                released_axis_centre[0] = bx + bw / 2
+                        band = poly_mask[py1:py2, px1:px2]
+                        # A block whose box sits outside the balloon can lose
+                        # the only pixels the split kept; the shared window
+                        # then overlaps the balloon somewhere useful.
+                        if band.any():
+                            mask_xyxy = [px1, py1, px2, py2]
+                            crop = band
                         mask = crop
                         ballon_area = int(crop.nonzero()[0].size)
         else:
@@ -1151,6 +1254,13 @@ class SceneTextManager(QObject):
                 # the thickest stroke; the bbox middle is what reads as
                 # "centered" in a balloon (mask coords are window-relative).
                 centroid = [(mb_x0 + mb_x1) // 2, (mb_y0 + mb_y1) // 2]
+                # On the released axis every holder of this outline aims at
+                # the same page-space point; the probes still reject any
+                # position that would leave the balloon.
+                if released_axis_centre[0] is not None:
+                    centroid[0] = int(released_axis_centre[0] - mask_xyxy[0])
+                if released_axis_centre[1] is not None:
+                    centroid[1] = int(released_axis_centre[1] - mask_xyxy[1])
         else:
             max_central_width = np.inf
             centroid = [0, 0]
@@ -1489,11 +1599,14 @@ class SceneTextManager(QObject):
         # is what the canvas renders. Re-measure after each move: the first
         # moveBy re-anchors the rect through the geometry controller.
         for _ in range(3):
-            _ys, _xs = np.nonzero(mask)
-            if _ys.size == 0:
+            if not mask_ys.size:
                 break
             _cx = mask_xyxy[0] + (mb_x0 + mb_x1) / 2
             _cy = mask_xyxy[1] + (mb_y0 + mb_y1) / 2
+            if released_axis_centre[0] is not None:
+                _cx = released_axis_centre[0]
+            if released_axis_centre[1] is not None:
+                _cy = released_axis_centre[1]
             _br = blkitem.absBoundingRect(qrect=True)
             _dx = _cx - (_br.x() + _br.width() / 2)
             _dy = _cy - (_br.y() + _br.height() / 2)

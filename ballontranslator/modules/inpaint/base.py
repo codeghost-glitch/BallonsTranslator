@@ -52,21 +52,27 @@ def complete_mask_on_ink(img: np.ndarray, mask: np.ndarray, halo: int = 9, clear
 
     Seg heads under-cover thin stroke tails (koharu's measured up to 7 px
     beyond its dilated mask), and a mask boundary crossing live ink leaves
-    gray glyph remnants after inpainting. Any page ink within ``halo`` pixels
-    of the mask joins it with ``clearance`` fresh pixels so the model's
-    boundary always lands on clean background. Ink is measured against the
-    local median, so both dark-on-light and light-on-dark text qualify, and
-    tone texture far from the mask is ignored.
+    gray glyph remnants after inpainting. Ink within ``halo`` pixels of the
+    mask joins it with ``clearance`` fresh pixels so the model's boundary
+    always lands on clean background - but only when its connected run
+    already reaches the mask, which is what tells a glyph the mask partly
+    covers from a balloon stroke or panel border running past the text:
+    absorbing those erases the drawing. Ink is measured against the local
+    median, so both dark-on-light and light-on-dark text qualify, and tone
+    texture far from the mask is ignored.
 
     Example:
         >>> img = np.full((40, 60, 3), 255, np.uint8)
-        >>> img[10, 33:41] = 0            # stroke tail the detector missed
-        >>> img[30, 5:12] = 0             # unrelated ink, far from the mask
+        >>> img[10, 33:50] = 0    # glyph: tail outside the mask, body under it
+        >>> img[17:20, 34] = 0    # balloon stroke passing the text
+        >>> img[30, 5:12] = 0     # unrelated ink, far from the mask
         >>> mask = np.zeros((40, 60), np.uint8)
         >>> mask[10, 42:50] = 255
         >>> out = complete_mask_on_ink(img, mask)
         >>> bool(out[10, 34]), bool(out[10, 39])
         (True, True)
+        >>> bool(out[17, 34])
+        False
         >>> bool(out[30, 8])
         False
     """
@@ -77,11 +83,21 @@ def complete_mask_on_ink(img: np.ndarray, mask: np.ndarray, halo: int = 9, clear
     ink = np.abs(gray.astype(np.int16) - local_bg.astype(np.int16)) > 30
     halo_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * halo + 1, 2 * halo + 1), (halo, halo))
     halo_mask = cv2.dilate(mask, halo_kernel)
-    extra = (ink & (halo_mask > 0)).astype(np.uint8) * 255
+    extra = ink & (halo_mask > 0)
+    if not extra.any():
+        return mask
+    run_count, run_labels = cv2.connectedComponents(extra.astype(np.uint8), 8)
+    reaches_mask = np.zeros(run_count, dtype=bool)
+    mask_y, mask_x = np.nonzero(mask > 0)
+    if mask_y.size:
+        reaches_mask[np.unique(run_labels[mask_y, mask_x])] = True
+    # Label 0 is the background, and masked pixels that are not ink land there.
+    reaches_mask[0] = False
+    extra = reaches_mask[run_labels] & extra
     if not extra.any():
         return mask
     clearance_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * clearance + 1, 2 * clearance + 1), (clearance, clearance))
-    grown = cv2.dilate(extra, clearance_kernel)
+    grown = cv2.dilate(extra.astype(np.uint8) * 255, clearance_kernel)
     return np.maximum(mask, grown)
 
 

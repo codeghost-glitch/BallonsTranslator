@@ -330,16 +330,9 @@ def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int,
     """
     if not seams:
         return blk_list
-    prepared = []
-    for a, b, parts in seams:
-        d = (float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
-        sides = []
-        for part in parts:
-            arr = np.asarray(part, np.float32)
-            centroid = arr.mean(axis=0)
-            side = d[0] * (centroid[1] - a[1]) - d[1] * (centroid[0] - a[0])
-            sides.append((side, arr))
-        prepared.append((a, b, d, sides))
+    # The keep/drop test below is outline overlap, so the per-part side of
+    # the seam is never needed.
+    prepared = [(a, b) for a, b, _parts in seams]
     outline_boxes = []
     for arr in outlines:
         bx, by, bw, bh = cv2.boundingRect(np.asarray(arr, np.float32))
@@ -347,7 +340,7 @@ def _seam_split_blocks(blk_list: List, seams: List, im_w: int, im_h: int,
     out = []
     for blk in blk_list:
         boxes = [blk]
-        for a, b, d, sides in prepared:
+        for a, b in prepared:
             next_boxes = []
             for box in boxes:
                 x, y, w, h = box.bounding_rect()

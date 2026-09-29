@@ -75,20 +75,28 @@ take the coverage-plateau exit; they converge on the probes or the readability
 floor. Detectors without outlines keep the legacy flood-fill path with its 90%
 mask-coverage rule.
 
+An outline holding several blocks (one balloon, two runs) fits each block
+against a band clipped from that outline. The detection box each block enlarges
+into its search window is three times the box, so neighbouring columns get
+overlapping windows and would both grow through the middle of the balloon;
+`_shared_outline_window` gives each block the half of its window up to the
+midpoint toward every sibling separated on that axis, and a sibling sharing an
+axis (text stacked in the same column) leaves it alone.
+
 Two refinements, both config-gated:
 
-- `pcfg.let_elliptic_layout` (default on): with an outline present, each
-  line's width budget follows an ellipse inscribed in the outline's bounding
-  box (`text_layout.line_is_valid`), curving the block with the balloon.
-  Center and radii both come from the bbox so the ellipse never crosses the
-  outline.
+- `pcfg.let_shape_aware_layout` (default on): with an outline present, each
+  line's width budget is the outline's exact horizontal extent at that line's
+  own row (`text_layout.row_width_profile`), measured once per block. Round,
+  rectangular, lopsided, and concave balloons therefore budget correctly
+  without the fudge factors an inscribed-ellipse approximation needed.
 - Latin-script targets hyphenate tokens wider than the line budget at pyphen
   points once the font settles (`text_layout.hyphenate_long_words`; pyphen is
   optional — without it tokens pass through unchanged). CJK targets wrap per
   character and are never hyphenated.
 
 Verification: `tests/test_auto_layout_fit.py` (fit, collision, centering,
-elliptical shape) and `tests/test_text_layout.py` (hyphenation, ellipse
+shape-aware budget) and `tests/test_text_layout.py` (hyphenation, row-width
 budget).
 
 Use these coordinate-space names consistently:

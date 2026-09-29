@@ -1168,40 +1168,42 @@ class ImgtransThread(QThread):
                     self.ocr_counter += 1
 
                     # Blocks without real language (periods, ellipses, empty
-                    # OCR results) cannot be translated; drop them and keep
-                    # their source region out of the inpaint mask.
-                    blk_list_updated = []
-                    for blk in blk_list:
-                        if text_is_punctuation_only(blk.get_text()):
-                            blk_removed.append(blk)
-                        else:
-                            blk_list_updated.append(blk)
+                    # OCR results) cannot be translated. Dropping them also
+                    # rewrites the mask and the inpainted image, so it stays
+                    # opt-in: the run pipeline exposes the switch.
+                    if pcfg.restore_ocr_empty:
+                        blk_list_updated = []
+                        for blk in blk_list:
+                            if text_is_punctuation_only(blk.get_text()):
+                                blk_removed.append(blk)
+                            else:
+                                blk_list_updated.append(blk)
 
-                    if len(blk_removed) > 0:
-                        blk_list.clear()
-                        blk_list += blk_list_updated
+                        if len(blk_removed) > 0:
+                            blk_list.clear()
+                            blk_list += blk_list_updated
 
-                        if mask is None:
-                            mask = self.imgtrans_proj.load_mask_by_imgname(imgname)
-                        if mask is not None:
-                            inpainted = None
-                            if not cfg_module.enable_inpaint:
-                                inpainted = self.imgtrans_proj.load_inpainted_by_imgname(imgname)
-                            for blk in blk_removed:
-                                xywh = blk.bounding_rect()
-                                blk_mask, xyxy = get_block_mask(xywh, mask, blk.angle)
-                                x1, y1, x2, y2 = xyxy
-                                if blk_mask is not None:
-                                    mask[y1: y2, x1: x2] = 0
-                                    if inpainted is not None:
-                                        mskpnt = np.where(blk_mask)
-                                        inpainted[y1: y2, x1: x2][mskpnt] = img[y1: y2, x1: x2][mskpnt]
-                                    need_save_mask = True
-                            if inpainted is not None and need_save_mask:
-                                self.imgtrans_proj.save_inpainted(imgname, inpainted)
-                            if need_save_mask:
-                                self.imgtrans_proj.save_mask(imgname, mask)
-                                need_save_mask = False
+                            if mask is None:
+                                mask = self.imgtrans_proj.load_mask_by_imgname(imgname)
+                            if mask is not None:
+                                inpainted = None
+                                if not cfg_module.enable_inpaint:
+                                    inpainted = self.imgtrans_proj.load_inpainted_by_imgname(imgname)
+                                for blk in blk_removed:
+                                    xywh = blk.bounding_rect()
+                                    blk_mask, xyxy = get_block_mask(xywh, mask, blk.angle)
+                                    x1, y1, x2, y2 = xyxy
+                                    if blk_mask is not None:
+                                        mask[y1: y2, x1: x2] = 0
+                                        if inpainted is not None:
+                                            mskpnt = np.where(blk_mask)
+                                            inpainted[y1: y2, x1: x2][mskpnt] = img[y1: y2, x1: x2][mskpnt]
+                                            need_save_mask = True
+                                if inpainted is not None and need_save_mask:
+                                    self.imgtrans_proj.save_inpainted(imgname, inpainted)
+                                if need_save_mask:
+                                    self.imgtrans_proj.save_mask(imgname, mask)
+                                    need_save_mask = False
 
                     # Outlines follow the same exception as the inpaint
                     # mask: bubbles whose text all failed the

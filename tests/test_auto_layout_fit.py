@@ -1,3 +1,4 @@
+import doctest
 import os
 import types
 import unittest
@@ -481,6 +482,133 @@ class TestAdvisoryHyphenation(unittest.TestCase):
         self.assertIn('-', rendered)
         self.assertGreater(len(lines), 1)
         self.assertGreater(size, 4.5, 'accepted above the readability floor')
+
+
+class TestSharedOutlineFit(unittest.TestCase):
+    """Blocks sharing one outline must not grow through each other.
+
+    Each block enlarges its detection box into a window three times its
+    size, so two columns in one balloon get overlapping windows and both
+    grow into the middle: page 008 of 第2.2話 rendered its two columns
+    57 px inside each other.
+    """
+
+    # Two narrow columns with a 20px gap in a balloon three times their
+    # width - the geometry page 008 of 第2.2話 actually produced.
+    LEFT = [160, 90, 290, 270]      # xyxy, first column (130 wide)
+    RIGHT = [310, 90, 395, 270]     # xyxy, second column (85 wide)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.old = {
+            'source': pcfg.module.translate_source,
+            'target': pcfg.module.translate_target,
+            'fntsize': pcfg.let_fntsize_flag,
+            'autolayout': pcfg.let_autolayout_flag,
+        }
+        pcfg.module.translate_source = 'ja'
+        pcfg.module.translate_target = 'en'
+        pcfg.let_fntsize_flag = 0
+        pcfg.let_autolayout_flag = True
+        self.img = np.full((IMG_H, IMG_W, 3), 90, np.uint8)
+        # Wider than the shared fixture's ellipse: the columns sit in its
+        # two halves, so each still has room after the split.
+        self.centre, self.radii = (250, 180), (170, 150)
+        cv2.ellipse(
+            self.img, self.centre, self.radii, 0, 0, 360, (255, 255, 255), -1,
+        )
+        self.poly = cv2.ellipse2Poly(
+            self.centre, self.radii, 0, 0, 360, 6
+        ).reshape(-1, 2).tolist()
+
+    def tearDown(self) -> None:
+        pcfg.module.translate_source = self.old['source']
+        pcfg.module.translate_target = self.old['target']
+        pcfg.let_fntsize_flag = self.old['fntsize']
+        pcfg.let_autolayout_flag = self.old['autolayout']
+
+    @staticmethod
+    def _column(box) -> TextBlock:
+        blk = TextBlock(box)
+        blk.set_lines_by_xywh([box[0], box[1], box[2] - box[0], box[3] - box[1]])
+        blk.fontformat.font_size = 40
+        blk._detected_bbox = [box[0], box[1], box[2] - box[0], box[3] - box[1]]
+        return blk
+
+    @staticmethod
+    def _ink_span(item):
+        """Horizontal extent of the glyphs the item actually renders."""
+        fm = QFontMetricsF(item.font())
+        width = max(fm.horizontalAdvance(ln) for ln in item.toPlainText().split('\n'))
+        rect = item.absBoundingRect(qrect=True)
+        align = item.blk.fontformat.alignment
+        if align == 2:
+            return rect.x() + rect.width() - width, rect.x() + rect.width()
+        if align != 1:
+            return rect.x(), rect.x() + width
+        centre = rect.x() + rect.width() / 2
+        return centre - width / 2, centre + width / 2
+
+    def _layout_pair(self):
+        blocks = [self._column(self.LEFT), self._column(self.RIGHT)]
+        stub = types.SimpleNamespace(
+            imgtrans_proj=types.SimpleNamespace(
+                img_array=self.img, current_img='001.png',
+                get_bubble_outlines=lambda page: [self.poly],
+                pages={'001.png': blocks},
+            ),
+            pairwidget_list=[],
+            auto_textlayout_flag=True,
+        )
+        items = []
+        for i, blk in enumerate(blocks):
+            item = TextBlkItem(blk, i)
+            self.assertIs(
+                SceneTextManager.layout_textblk(stub, item, text=LONG_TEXT), True
+            )
+            items.append(item)
+        return items
+
+    def test_columns_keep_their_own_half_of_the_balloon(self) -> None:
+        items = self._layout_pair()
+        for item in items:
+            self.assertTrue(item.toPlainText().strip())
+            # Never accepted as a floor-sized sliver: the split leaves each
+            # column room, so nothing may collapse onto the 15% floor.
+            self.assertGreaterEqual(item.font().pointSizeF(), 40 * 0.15 - 0.5)
+        left, right = (self._ink_span(item) for item in items)
+        self.assertLessEqual(
+            left[1], right[0],
+            f'neighbouring columns overlap: {left} vs {right}',
+        )
+
+    def test_window_splits_at_the_sibling_midpoint(self) -> None:
+        window = [0, 0, 300, 60]
+        # Sibling on the left: the window gives up its left half.
+        self.assertEqual(
+            M._shared_outline_window(
+                window, self._column([100, 0, 140, 50]),
+                [self._column([0, 0, 60, 50])],
+            ),
+            [80, 0, 300, 60],
+        )
+        # Sibling on the same rows: only the vertical axis is split.
+        self.assertEqual(
+            M._shared_outline_window(
+                window, self._column([100, 0, 140, 50]),
+                [self._column([90, 60, 150, 110])],
+            ),
+            [0, 0, 300, 55],
+        )
+        # Nothing runs the helpers' own examples, so run them here.
+        for helper in (M._block_xyxy, M._shared_outline_window):
+            runner = doctest.DocTestRunner()
+            for test in doctest.DocTestFinder().find(helper):
+                runner.run(test)
+            self.assertEqual(runner.failures, 0, helper.__name__)
 
 
 if __name__ == '__main__':
