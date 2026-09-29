@@ -1854,13 +1854,6 @@ class SceneTextManager(QObject):
             blkitem.setFontSize(blk_font.pointSizeF())
             blkitem.document().setDefaultFont(blk_font)
         blkitem.squeezeBoundingRect()
-        LOGGER.debug(
-            'layout fit: font=%.2f lines=%d hyphen=%s check_fit=%s '
-            'autolayout_flag=%s resize=%.3f txt=%r',
-            blk_font.pointSizeF(), len(new_text.split(chr(10))),
-            ('-' in new_text), check_fit, self.auto_textlayout_flag,
-            resize_ratio, text[:36],
-        )
         # Center the settled text box on the balloon itself: the layout
         # anchors on the detection box center, which is off the balloon
         # center for most bubbles, and the item rect (not layout_text's xywh)
