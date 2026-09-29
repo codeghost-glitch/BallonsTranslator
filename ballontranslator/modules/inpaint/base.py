@@ -47,19 +47,21 @@ def filter_mask_by_bboxes(mask: np.ndarray, textblock_list: List[TextBlock] = No
     return cv2.bitwise_and(mask, rect_mask)
 
 
-def complete_mask_on_ink(img: np.ndarray, mask: np.ndarray, halo: int = 9, clearance: int = 6) -> np.ndarray:
+def complete_mask_on_ink(img: np.ndarray, mask: np.ndarray, halo: int = 9, clearance: int = 4) -> np.ndarray:
     """Pull glyph ink the detector missed into the inpaint mask.
 
     Seg heads under-cover thin stroke tails (koharu's measured up to 7 px
     beyond its dilated mask), and a mask boundary crossing live ink leaves
     gray glyph remnants after inpainting. Ink within ``halo`` pixels of the
-    mask joins it with ``clearance`` fresh pixels so the model's boundary
-    always lands on clean background - but only when its connected run
-    already reaches the mask, which is what tells a glyph the mask partly
-    covers from a balloon stroke or panel border running past the text:
-    absorbing those erases the drawing. Ink is measured against the local
-    median, so both dark-on-light and light-on-dark text qualify, and tone
-    texture far from the mask is ignored.
+    mask joins it - but only when its connected run already reaches the mask
+    and it is a compact glyph blob, which is what tells a glyph the mask
+    partly covers from a balloon stroke or panel border running past the
+    text: absorbing those erases the drawing. Only the newly-absorbed ink is
+    grown (the detector already padded what it found), by a thin
+    ``clearance`` so the model's boundary lands on clean background. Ink is
+    measured against the local median, so both dark-on-light and
+    light-on-dark text qualify, and tone texture far from the mask is
+    ignored.
 
     Example:
         >>> img = np.full((40, 60, 3), 255, np.uint8)
@@ -119,10 +121,18 @@ def complete_mask_on_ink(img: np.ndarray, mask: np.ndarray, halo: int = 9, clear
     # Label 0 is the background, and masked pixels that are not ink land there.
     reaches_mask[0] = False
     extra = reaches_mask[run_labels] & extra
-    if not extra.any():
+    # Grow only the ink the mask did NOT already cover. The detector's ksize
+    # dilation already padded the glyphs it found, so re-dilating the whole
+    # absorbed blob (the old behavior) double-pads it and inflates the mask by
+    # thousands of pixels, eating nearby artwork. The missed ink is itself now
+    # in the mask; it only needs a thin clean margin so the inpainter's
+    # boundary does not cross live ink. Coverage of the near ink is identical;
+    # the footprint is smaller.
+    newly = extra & (mask == 0)
+    if not newly.any():
         return mask
     clearance_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * clearance + 1, 2 * clearance + 1), (clearance, clearance))
-    grown = cv2.dilate(extra.astype(np.uint8) * 255, clearance_kernel)
+    grown = cv2.dilate(newly.astype(np.uint8) * 255, clearance_kernel)
     return np.maximum(mask, grown)
 
 
