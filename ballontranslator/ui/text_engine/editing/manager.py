@@ -444,14 +444,18 @@ def _attribution_points(blk) -> np.ndarray:
     return np.asarray(blk.center(), np.float32).reshape(1, 2)
 
 
-def _bubble_polygon_for(proj, blk) -> Optional[List]:
+def _bubble_polygon_for(outlines, blk) -> Optional[List]:
     """Page polygon of the detected bubble holding this block's text.
+
+    Takes the already-fetched outline list rather than the project: the
+    ownership scan calls this once per sibling block, and re-reading
+    ``get_bubble_outlines`` (which deep-copies the page) per call made a
+    busy page cost O(blocks^2) full copies and froze the UI.
 
     Mirrors ProjImgTrans.prune_bubble_outlines attribution: line quads
     and their centroids first, block center as fallback; deepest
     containment wins when outlines nest.
     """
-    outlines = proj.get_bubble_outlines(proj.current_img)
     if not outlines:
         return None
     pts = _attribution_points(blk)
@@ -1105,7 +1109,11 @@ class SceneTextManager(QObject):
                 max_enlarge_ratio = 3
             enlarge_ratio = min(max(bounding_rect[2] / bounding_rect[3], bounding_rect[3] / bounding_rect[2]) * 1.5, max_enlarge_ratio)
             mask, ballon_area, mask_xyxy, region_rect = extract_ballon_region(img, bounding_rect, enlarge_ratio=enlarge_ratio, cal_region_rect=True)
-            bubble = _bubble_polygon_for(self.imgtrans_proj, blkitem.blk)
+            # Fetched once: the ownership scan below re-tests every sibling
+            # block, and a per-call get_bubble_outlines deep-copied the whole
+            # page each time (O(blocks^2) copies -> UI freeze on busy pages).
+            page_outlines = self.imgtrans_proj.get_bubble_outlines(self.imgtrans_proj.current_img)
+            bubble = _bubble_polygon_for(page_outlines, blkitem.blk)
             if bubble is not None:
                 # Detector geometry wins over the flood-fill: no window
                 # clipping, no glyph holes, exact centroid for centering.
@@ -1124,12 +1132,13 @@ class SceneTextManager(QObject):
                     # polygon: merely touching an overlapping neighbour must
                     # not demote a single-owner outline to the clipped band.
                     # One attribution pass feeds both the count and the split
-                    # below; get_bubble_outlines deep-copies the record.
+                    # below; the shared page_outlines list keeps the whole
+                    # scan O(blocks) instead of re-copying per sibling.
                     page_blocks = getattr(self.imgtrans_proj, 'pages', None) or {}
                     page_blocks = page_blocks.get(self.imgtrans_proj.current_img, [])
                     owners = [
                         other for other in page_blocks
-                        if _bubble_polygon_for(self.imgtrans_proj, other) == bubble
+                        if _bubble_polygon_for(page_outlines, other) == bubble
                     ]
                     if len(owners) <= 1:
                         bx, by, bw, bh = cv2.boundingRect(np.asarray(bubble, np.int32))
