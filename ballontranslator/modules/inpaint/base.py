@@ -76,19 +76,44 @@ def complete_mask_on_ink(img: np.ndarray, mask: np.ndarray, halo: int = 9, clear
         >>> bool(out[30, 8])
         False
     """
-    if mask is None or img is None:
+    if mask is None or img is None or not mask.any():
         return mask
     gray = img.mean(axis=2) if img.ndim == 3 else img
     local_bg = cv2.medianBlur(gray.astype(np.uint8), 21)
     ink = np.abs(gray.astype(np.int16) - local_bg.astype(np.int16)) > 30
     halo_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * halo + 1, 2 * halo + 1), (halo, halo))
     halo_mask = cv2.dilate(mask, halo_kernel)
-    extra = ink & (halo_mask > 0)
+    # A missed glyph tail is a compact ink blob sitting just outside the mask.
+    # A balloon outline or panel border is a thin, sprawling curve that can
+    # span the page and still *touch* the mask after the detector's ksize
+    # dilation - absorbing and growing that stroke punches a hole in the
+    # drawing. Classify each FULL-ink component (not the halo-cut one): a real
+    # glyph is solid (high fill) and does not sprawl far past the text, while
+    # page structure is sprawling and hollow. Reject only components that are
+    # BOTH, so a wide but solid glyph still counts.
+    ink_count, ink_labels, ink_stats, _ = cv2.connectedComponentsWithStats(
+        ink.astype(np.uint8), 8
+    )
+    mask_y, mask_x = np.nonzero(mask > 0)
+    mx0, mx1 = int(mask_x.min()), int(mask_x.max())
+    my0, my1 = int(mask_y.min()), int(mask_y.max())
+    slack = max(mx1 - mx0, my1 - my0)
+    near_ink = np.zeros(ink_count, dtype=bool)
+    for ci in range(1, ink_count):
+        l, t, w, h = ink_stats[ci, 0], ink_stats[ci, 1], ink_stats[ci, 2], ink_stats[ci, 3]
+        gap = max(l - mx1, mx0 - (l + w), t - my1, my0 - (t + h))
+        if gap > slack:
+            continue
+        area = int(ink_stats[ci, 4])
+        fill = area / float(max(w * h, 1))
+        if max(w, h) > slack and fill < 0.35:
+            continue  # sprawling + hollow: a balloon outline or panel border
+        near_ink[ci] = True
+    extra = ink & (halo_mask > 0) & near_ink[ink_labels]
     if not extra.any():
         return mask
     run_count, run_labels = cv2.connectedComponents(extra.astype(np.uint8), 8)
     reaches_mask = np.zeros(run_count, dtype=bool)
-    mask_y, mask_x = np.nonzero(mask > 0)
     if mask_y.size:
         reaches_mask[np.unique(run_labels[mask_y, mask_x])] = True
     # Label 0 is the background, and masked pixels that are not ink land there.

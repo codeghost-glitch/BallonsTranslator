@@ -33,6 +33,28 @@ class TestInpaintMaskInkCompletion(unittest.TestCase):
         out = complete_mask_on_ink(img, mask)
         self.assertFalse((out[17:20, 34] >= 128).any())
 
+    def test_long_thin_stroke_touching_the_mask_is_not_absorbed(self) -> None:
+        # A balloon outline that TOUCHES the mask (the detector's ksize
+        # dilation already nudges the text mask onto the bubble edge) is one
+        # long, hollow curve. Growing it punches a hole in the drawing. The
+        # mask sits just inside the balloon and reaches its stroke, as it does
+        # on a real page; the stroke must not be pulled into the mask.
+        img = np.full((200, 200, 3), 255, np.uint8)
+        # Balloon outline: a large, thin, hollow ellipse.
+        cv2.ellipse(img, (100, 100), (70, 80), 0, 0, 360, (0, 0, 0), 3)
+        # A text mask inside the balloon whose right edge is dilated onto the
+        # balloon's right stroke (stroke sits at x ~167-173).
+        mask = np.zeros((200, 200), np.uint8)
+        mask[80:120, 140:172] = 255
+        out = complete_mask_on_ink(img, mask)
+        # Every stroke pixel the base mask did not already cover must stay
+        # out: the balloon edge is not erased.
+        base_cover = mask > 0
+        stroke_pixels = (img[:, :, 0] < 128)
+        erased = (out > 0) & stroke_pixels & ~base_cover
+        self.assertEqual(int(erased.sum()), 0,
+                         'balloon stroke absorbed into the inpaint mask')
+
     def test_far_ink_is_untouched(self) -> None:
         img = np.full((40, 60, 3), 255, np.uint8)
         img[30, 5:12] = 0
