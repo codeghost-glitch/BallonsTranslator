@@ -1841,25 +1841,46 @@ class SceneTextManager(QObject):
                 best_size, best_ratio = font_size, resize_ratio
                 # 1.15 is the biggest step that stays a step rather than a
                 # jump (a jump lands past a wrap change and reads as a
-                # different layout); 1.01 is where a further step is worth
-                # less than the pixel it costs. The probe budget only exists
-                # so a pathological layout cannot spin here.
+                # different layout). The probe budget only exists so a
+                # pathological layout cannot spin here.
                 step = min(room, 1.15)
+                rejected = None
                 for _step in range(24):
                     if step <= 1.01:
                         break
-                    cand = layout_at(best_size * step)
+                    cand_size = best_size * step
+                    cand = layout_at(cand_size)
                     if not cand.accepted:
+                        rejected = (cand_size if rejected is None
+                                    else min(rejected, cand_size))
                         step = 1 + (step - 1) / 2
                         continue
                     best_text, best_xywh = cand.text, cand.xywh
-                    best_size, best_ratio = best_size * step, best_ratio * step
+                    best_size, best_ratio = cand_size, best_ratio * step
                     room = max(mb_w * 0.98 / cand.w, mb_h * 0.98 / cand.h)
                     if room <= 1.03:
                         break
                     step = min(room, 1.15)
-                # The last probe was a rejected overshoot; commit the last
-                # size that passed - the loop never saw it.
+                # Tighten onto the boundary. Halving the step only approaches
+                # the rejected size from below and stops at 1%, so the commit
+                # sat up to 1% under the boundary - and which point under it
+                # depended on how many halvings the run needed, i.e. on where
+                # that run's descent happened to start. That is what kept a
+                # block whose canvas lands on the balloon edge cycling by a
+                # percent on every pass. Bisecting the bracket the climb
+                # already bracketed lands on the boundary itself, so the
+                # answer is the boundary and not the path taken to it.
+                while (rejected is not None
+                       and (rejected - best_size) / best_size > 0.002):
+                    mid = (best_size + rejected) / 2
+                    cand = layout_at(mid)
+                    if cand.accepted:
+                        best_text, best_xywh = cand.text, cand.xywh
+                        best_size, best_ratio = mid, best_ratio * mid / best_size
+                    else:
+                        rejected = mid
+                # Commit the last size that passed; the loop never saw the
+                # rejected one.
                 new_text, xywh = best_text, best_xywh
                 resize_ratio, font_size = best_ratio, best_size
                 blk_font.setPointSizeF(font_size)
