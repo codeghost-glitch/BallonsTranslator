@@ -44,14 +44,19 @@ class TestHyphenateLongWords(unittest.TestCase):
         self.assertEqual(wl, [measure(w) for w in words])
         self.assertLessEqual(max(wl), 80)
 
-    def test_progress_guaranteed_on_unbreakable_token(self) -> None:
-        # No linguistic point (e.g. a URL-like run): the token stays whole
-        # instead of looping forever.
-        words, wl = ['x' * 40], [400]
+    def test_unbreakable_token_is_force_broken_and_terminates(self) -> None:
+        # No linguistic point (a URL-like run): rather than stay whole and
+        # overflow the line - pinning the fit small and leaving a tall
+        # balloon's height unused - it is force-broken into line-fitting
+        # chunks, and the loop still terminates.
+        measure = lambda s: len(s) * 10
+        words, wl = hyphenate_long_words(['x' * 40], [400], measure, 'en', 80)
+        self.assertGreater(len(words), 1)
         self.assertEqual(
-            hyphenate_long_words(words, wl, lambda s: len(s) * 10, 'en', 80),
-            (words, wl),
+            ''.join(w[:-1] if w.endswith(BREAK) else w for w in words),
+            'x' * 40,
         )
+        self.assertLessEqual(max(wl), 80)
 
 
 class TestRowProfileLineBudget(unittest.TestCase):

@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import numpy as np
 
 from .imgproc_utils import rotate_image
@@ -645,6 +645,29 @@ def _join_hyphen_runs(line_text: str) -> str:
     return ' '.join(merged)
 
 
+def _widest_fitting_prefix(word: str, max_width: float, measure, min_tail: int) -> Optional[int]:
+    r"""Largest split point whose head (plus a hyphen) fits the line.
+
+    Character fallback for tokens pyphen has no point for - URLs, sound
+    effects, foreign runs. Returns None when not even the shortest head
+    fits, so the caller can keep the token whole and let it overflow.
+
+    >>> _widest_fitting_prefix('hahahahaha', 60, lambda s: len(s) * 10, 2)
+    5
+    >>> _widest_fitting_prefix('ab', 60, lambda s: len(s) * 10, 2) is None
+    True
+    """
+    lo, hi, best = 1, len(word) - min_tail, None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if measure(word[:mid] + '-') <= max_width:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 def hyphenate_long_words(
     words: List[str],
     wl_list: List[int],
@@ -652,8 +675,8 @@ def hyphenate_long_words(
     lang: str,
     max_width: int,
 ) -> Tuple[List[str], List[int]]:
-    r"""Split Latin-script tokens wider than the line budget at linguistic
-    hyphen points.
+    r"""Split Latin-script tokens wider than the line budget to hyphenation
+    points, falling back to a character break when pyphen has none.
 
     Candidates are advisory: the caller derives them per layout attempt from
     its pristine word list and tries the unhyphenated layout first, so a
@@ -662,6 +685,14 @@ def hyphenate_long_words(
     two characters on each side, which keeps single-syllable fragments out
     of ordinary prose.
 
+    A token pyphen cannot split at a linguistic point (a URL, a sound
+    effect, a foreign run) is force-broken at the widest prefix that fits.
+    Letting it stay whole overflows the line and pins the fit small, so a
+    tall balloon's spare height goes unused; the break lets balloon
+    typesetting grow the font to fill it. The forced head carries the same
+    internal break marker as a pyphen head, so it is hidden on a shared
+    line and hyphenated only at a real line end.
+
     Unknown languages fall back through pyphen's language mapping; without
     pyphen the input passes through unchanged. ``measure`` maps a string to
     its pixel width in the current layout font.
@@ -669,7 +700,7 @@ def hyphenate_long_words(
     >>> hyphenate_long_words(['OK'], [30], lambda s: len(s) * 10, 'en', 60)
     (['OK'], [30])
     >>> hyphenate_long_words(['extraordinary'], [110], lambda s: len(s) * 10, 'en', 60)
-    (['ex\x1e', 'traordinary'], [30, 110])
+    (['ex\x1e', 'traor\x1e', 'dinary'], [30, 60, 60])
     >>> hyphenate_long_words(['onto'], [400], lambda s: len(s) * 10, 'en', 60)
     (['onto'], [400])
     """
@@ -700,7 +731,22 @@ def hyphenate_long_words(
                 if head_w <= max_width:
                     split = p  # widest head that still fits a line
             if split is None:
-                break  # no linguistic point fits (URLs): keep the token whole
+                # pyphen has no usable point (URLs, sound effects, foreign
+                # runs). Keeping the token whole lets it overflow the line
+                # and pins the fit small: balloon typesetting grows toward
+                # height by breaking whatever blocks its width, so a run
+                # pyphen cannot split would leave a tall balloon's spare
+                # axis unused. Force a character break instead; the head
+                # carries _HYPHEN_BREAK, so _join_hyphen_runs hides it on a
+                # shared line and shows a hyphen only at a real line end.
+                forced = _widest_fitting_prefix(word, max_width, measure, min_suffix)
+                if forced is None:
+                    break  # not even one glyph fits: leave it to overflow
+                out_words.append(word[:forced] + _HYPHEN_BREAK)
+                out_wl.append(measure(word[:forced] + '-'))
+                word = word[forced:]
+                width = measure(word)
+                continue
             out_words.append(word[:split] + _HYPHEN_BREAK)
             out_wl.append(measure(word[:split] + '-'))
             word = word[split:]
