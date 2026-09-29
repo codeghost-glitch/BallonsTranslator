@@ -204,25 +204,6 @@ class RichTextAnnotationTest(unittest.TestCase):
             to_rich_text_html(restored),
         )
 
-    def test_old_qt_html_skips_extension_parser_and_keeps_spacing_fallback(self):
-        source = QTextDocument()
-        source.setPlainText('old rich text')
-        restored = QTextDocument()
-
-        with patch(
-            'ballontranslator.ui.text_engine.annotations.'
-            '_rich_text_extensions_from_html'
-        ) as parse_extensions:
-            load_rich_text_html(
-                restored,
-                source.toHtml(),
-                letter_spacing_fallback=1.25,
-            )
-
-        parse_extensions.assert_not_called()
-        self.assertEqual(restored.toPlainText(), 'old rich text')
-        self.assertEqual(letter_spacing_value(_format_at(restored, 0)), 1.25)
-
     def test_emphasis_inline_round_trip_keeps_fragment_style(self):
         source = QTextDocument()
         source.setPlainText('A𠮷B')

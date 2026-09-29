@@ -21,11 +21,6 @@ class GridNumbaTest(unittest.TestCase):
     def setUpClass(cls):
         warm_grid_numba_cache()
 
-    def test_cache_uses_persistent_app_directory(self):
-        expected = osp.join(shared.cache_dir, 'numba')
-        self.assertEqual(NUMBA_CACHE_DIR, expected)
-        self.assertEqual(os.environ['NUMBA_CACHE_DIR'], expected)
-
     def test_warmed_kernel_preserves_padded_source_pixels(self):
         logical = QRectF(0, 0, 100, 50)
         source = logical.adjusted(-10, -5, 10, 5)

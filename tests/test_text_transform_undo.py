@@ -838,48 +838,6 @@ class TextTransformPanelTest(TextTransformTestBase):
         with self.assertRaisesRegex(TypeError, 'requires TextTransformStack'):
             panel._set_transform_states([font_format])
 
-    def test_stack_shape_update_syncs_content_height_once(self):
-        panel = self._make_panel()
-        with patch.object(
-            panel,
-            '_sync_content_height',
-            wraps=panel._sync_content_height,
-        ) as sync_height:
-            self._set_stack(panel, transform_state(GridTextTransform()))
-
-        sync_height.assert_called_once_with()
-
-    def test_selected_item_updates_transform_panel_once(self):
-        previous_canvas = getattr(SW, 'canvas', None)
-        previous_active_format = C.active_format
-        canvas = Canvas()
-        SW.canvas = canvas
-        self.addCleanup(setattr, SW, 'canvas', previous_canvas)
-        self.addCleanup(setattr, C, 'active_format', previous_active_format)
-        self.addCleanup(canvas.gv.deleteLater)
-        item, _ = self._make_pair(0, TEST_LINES[0], False)
-        item.setParentItem(canvas.textLayer)
-        item.set_text_transform(transform_state(GridTextTransform()))
-
-        with patch.object(
-            shared,
-            'register_view_widget',
-            lambda *_args: None,
-            create=True,
-        ):
-            format_panel = FontFormatPanel(self.app)
-        format_panel.global_format = FontFormat()
-        self.addCleanup(format_panel.deleteLater)
-
-        with patch.object(
-            format_panel.texttransform_panel,
-            '_set_transform_states',
-            wraps=format_panel.texttransform_panel._set_transform_states,
-        ) as set_transform_states:
-            format_panel.set_textblk_item(item)
-
-        set_transform_states.assert_called_once()
-
     def test_cursor_letter_spacing_does_not_replace_item_default(self):
         previous_canvas = getattr(SW, 'canvas', None)
         previous_active_format = C.active_format

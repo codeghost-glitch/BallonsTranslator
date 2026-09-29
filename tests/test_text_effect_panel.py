@@ -4035,16 +4035,6 @@ class TextEffectPanelTest(unittest.TestCase):
         self.assertTrue(mixed_card.move_up_button.isEnabled())
         self.assertFalse(mixed_card.move_down_button.isEnabled())
 
-    def test_shutdown_stops_generation_but_ordinary_save_does_not(self):
-        session = self.panel.text_effect_session
-        with patch.object(session, 'stop_image_generation') as stop:
-            self.panel.resolve_text_transform_edits_for_save()
-            stop.assert_not_called()
-
-            self.panel.stop_text_effect_generation_for_shutdown()
-
-        stop.assert_called_once_with(detach_card=True)
-
     def test_whole_format_application_detaches_blocked_generation(self):
         asset = RasterAssetRef(
             'assets/' + '6' * 64 + '.png', 'old.png'

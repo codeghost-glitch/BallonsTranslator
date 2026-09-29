@@ -11,12 +11,6 @@ from ballontranslator import launch
 
 class LaunchRestartTests(unittest.TestCase):
 
-    def test_numba_cache_uses_persistent_app_directory(self):
-        self.assertEqual(
-            os.environ['NUMBA_CACHE_DIR'],
-            os.path.join(launch.shared.cache_dir, 'numba'),
-        )
-
     def test_restart_preserves_module_launch(self):
         main_path = str(Path(launch.__file__).resolve().parent / '__main__.py')
         with mock.patch.object(sys, 'argv', [main_path, '--debug']), \

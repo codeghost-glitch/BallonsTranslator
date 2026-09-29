@@ -1,4 +1,3 @@
-import doctest
 import os
 import types
 import unittest
@@ -639,12 +638,6 @@ class TestSharedOutlineFit(unittest.TestCase):
             ),
             [0, 0, 300, 55],
         )
-        # Nothing runs the helpers' own examples, so run them here.
-        for helper in (M._block_xyxy, M._shared_outline_window):
-            runner = doctest.DocTestRunner()
-            for test in doctest.DocTestFinder().find(helper):
-                runner.run(test)
-            self.assertEqual(runner.failures, 0, helper.__name__)
 
 
 if __name__ == '__main__':

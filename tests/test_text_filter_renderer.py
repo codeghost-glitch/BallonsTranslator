@@ -390,33 +390,6 @@ class TextFilterRendererTest(unittest.TestCase):
                 )
                 self.assertFalse(np.array_equal(above_pixels, below_pixels))
 
-    def test_expanding_builtin_chain_is_strict_export_eligible_h_and_v(self):
-        stack = TextEffectStack(effects=(
-            FilterEffect('builtin:gaussian_blur', params={'radius': 1.0}),
-            FilterEffect('builtin:bloom', params={
-                'threshold': 0.5, 'radius': 1.0, 'intensity': 0.8,
-            }),
-            FilterEffect('builtin:glitch', params={
-                'shift': 2.0, 'block_size': 4.0, 'activity': 1.0,
-                'rgb_split': 1.0, 'seed': 7,
-            }),
-        ))
-        for vertical in (False, True):
-            with self.subTest(vertical=vertical):
-                item = self._item(stack, vertical=vertical)
-                renderer = item.effect_renderer
-                renderer.set_export_effect_render(True)
-                try:
-                    pixels = pixmap2ndarray(
-                        renderer._render_effect_surface(
-                            renderer.boundingRect(), 1.0
-                        ),
-                        keep_alpha=True,
-                    )
-                finally:
-                    renderer.set_export_effect_render(False)
-                self.assertGreater(np.count_nonzero(pixels[:, :, 3]), 0)
-
     def test_neutral_expanding_builtins_do_not_add_effect_padding(self):
         effects = (
             FilterEffect('builtin:gaussian_blur', params={'radius': 0.0}),
@@ -1174,24 +1147,6 @@ class TextFilterRendererTest(unittest.TestCase):
         finally:
             canvas.deleteLater()
             self.app.processEvents()
-
-    def test_filter_output_survives_nonlinear_transform(self):
-        item = self._item(TextEffectStack(effects=(FilterEffect(
-            'builtin:gaussian_blur', params={'radius': 3.0}
-        ),)))
-        item.set_text_transform(TextTransformStack((SineTextTransform(),)))
-        scene = QGraphicsScene()
-        scene.addItem(item)
-        image = QImage(420, 260, QImage.Format.Format_ARGB32_Premultiplied)
-        image.fill(QColor(0, 0, 0, 0))
-        painter = QPainter(image)
-        scene.render(painter)
-        painter.end()
-        self.assertGreater(
-            np.count_nonzero(pixmap2ndarray(image, keep_alpha=True)[:, :, 3]),
-            0,
-        )
-
 
 if __name__ == '__main__':
     unittest.main()

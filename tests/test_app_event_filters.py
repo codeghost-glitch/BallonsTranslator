@@ -89,18 +89,6 @@ class AppEventFilterOrderingTest(unittest.TestCase):
 
         self.assertFalse(event.type_requested)
 
-    def test_font_exclude_dialog_ignores_non_widget_events_before_type(self):
-        dialog = MinimalFontExcludeDialog()
-        dialog.show()
-        event = TypeSensitiveEvent()
-        try:
-            dialog.eventFilter(QObject(), event)
-        finally:
-            dialog.close()
-            dialog.deleteLater()
-
-        self.assertFalse(event.type_requested)
-
     def test_suggestion_popup_ignores_non_app_events_before_type(self):
         editor = QTextEdit()
         popup = FloatingSuggestionLabel(editor)

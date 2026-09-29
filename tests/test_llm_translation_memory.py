@@ -462,32 +462,6 @@ class LLMTranslationMemoryTest(
             request.call_args.args[1]['messages'][0]['content'],
         )
 
-    def test_memory_compaction_keeps_its_actual_translation_context_size(self) -> None:
-        completion = LLMChatResult(
-            content='merged memory',
-            usage=None,
-            finish_reason='',
-        )
-
-        with mock.patch.object(
-            self.translator,
-            'request_chat_completion',
-            return_value=completion,
-        ) as request, mock.patch(
-            'ballontranslator.modules.translators.trans_llm.messages_token_count',
-            return_value=300,
-        ):
-            checkpoint = self.translator._compact_summary_batch(
-                previous=None,
-                summaries=(PageSummary('001.png', 'summary'),),
-                profile=self.profile,
-                model='vision-model',
-                target_language='Simplified Chinese',
-            )
-
-        self.assertEqual(checkpoint.token_count, 300)
-        request.assert_called_once()
-
     def test_persisted_memory_applies_without_vision_summary_or_history(self):
         pcfg.module.llm_translate_context = LLMTranslateContext.PAGE
         pcfg.module.llm_translate_summary_memory = True

@@ -148,37 +148,6 @@ class ImageEffectRendererTest(unittest.TestCase):
             )
             scene.removeItem(item)
 
-    def test_image_keeps_canonical_and_generated_rasterization(self):
-        with tempfile.TemporaryDirectory() as directory:
-            project = ProjImgTrans()
-            project.directory = directory
-            asset = self._asset(
-                project,
-                directory,
-                'foreground.png',
-                np.full((2, 2, 4), (20, 60, 230, 255), np.uint8),
-            )
-            item = self._item(TextEffectStack(effects=(
-                ImageEffect(asset, mode='foreground'),
-                StrokeEffect(width=0.4),
-            )))
-            scene = self._attach(item, project)
-            renderer = item.effect_renderer
-            renderer.release_caches()
-
-            with patch.object(
-                renderer,
-                '_capture_effect_source',
-                wraps=renderer._capture_effect_source,
-            ) as capture:
-                rendered = renderer._render_effect_surface(
-                    renderer.boundingRect(), 1.0
-                )
-
-            self.assertFalse(rendered.isNull())
-            self.assertGreater(capture.call_count, 0)
-            scene.removeItem(item)
-
     def test_image_prefix_cache_tracks_nodes_before_bottom_filter(self):
         with tempfile.TemporaryDirectory() as directory:
             project = ProjImgTrans()

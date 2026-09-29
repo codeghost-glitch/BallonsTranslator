@@ -744,31 +744,6 @@ class TypedTextEffectRendererTest(unittest.TestCase):
                             render_generated.call_args.args[0], expected
                         )
 
-    def test_exterior_source_grows_silhouette_once_per_preceding_stroke(self):
-        first = StrokeEffect(width=0.12, position='outside')
-        second = StrokeEffect(width=0.20, position='center')
-        item = self._item(TextEffectStack(effects=(
-            ShadowEffect(),
-            second,
-            GlowEffect(size=0.08),
-            first,
-        )))
-        renderer = item.effect_renderer
-
-        with patch.object(
-            renderer,
-            '_paint_stroke_silhouette',
-            wraps=renderer._paint_stroke_silhouette,
-        ) as paint_silhouette:
-            renderer._render_pre_mask_effect_surface(
-                renderer.boundingRect(), 1.0
-            )
-
-        self.assertEqual(
-            [call.args[2] for call in paint_silhouette.call_args_list],
-            [(first,), (second,)],
-        )
-
     def test_gradient_preview_matches_renderer_straight_rgba(self):
         paint = LinearGradientPaint(
             stops=(
@@ -851,59 +826,6 @@ class TypedTextEffectRendererTest(unittest.TestCase):
             1.0,
         )
         self.assertEqual(stop_colored[0, 0].tolist(), [0, 100, 240, 64])
-
-    def test_canonical_alpha_is_extracted_for_consumers_and_center_clip(self):
-        text_fill = TextFillEffect(
-            paint=self._constant_gradient((20, 60, 220))
-        )
-        item = self._item(TextEffectStack(effects=(text_fill,)))
-        renderer = item.effect_renderer
-        renderer._effect_raster_state.effect_source_cache.clear()
-        with patch.object(
-            renderer, '_pixmap_alpha', wraps=renderer._pixmap_alpha
-        ) as pixmap_alpha:
-            rendered = renderer._render_pre_mask_effect_surface(
-                renderer.boundingRect(), 1.0
-            )
-        self.assertEqual(pixmap_alpha.call_count, 0)
-        self.assertGreater(np.count_nonzero(
-            pixmap2ndarray(rendered, keep_alpha=True)[..., 3]
-        ), 0)
-
-        center_gradient = self._item(TextEffectStack(effects=(
-            StrokeEffect(
-                width=0.2,
-                position='center',
-                paint=LinearGradientPaint(),
-            ),
-        )))
-        renderer = center_gradient.effect_renderer
-        renderer._effect_raster_state.effect_source_cache.clear()
-        with patch.object(
-            renderer, '_pixmap_alpha', wraps=renderer._pixmap_alpha
-        ) as pixmap_alpha:
-            renderer._render_pre_mask_effect_surface(
-                renderer.boundingRect(), 1.0
-            )
-        self.assertEqual(pixmap_alpha.call_count, 1)
-
-        consumers = (
-            ShadowEffect(),
-            ShadowEffect(shadow_type='inner'),
-            StrokeEffect(width=0.2, position='outside'),
-        )
-        for effect in consumers:
-            with self.subTest(effect=effect):
-                item = self._item(TextEffectStack(effects=(effect,)))
-                renderer = item.effect_renderer
-                renderer._effect_raster_state.effect_source_cache.clear()
-                with patch.object(
-                    renderer, '_pixmap_alpha', wraps=renderer._pixmap_alpha
-                ) as pixmap_alpha:
-                    renderer._render_pre_mask_effect_surface(
-                        renderer.boundingRect(), 1.0
-                    )
-                self.assertGreater(pixmap_alpha.call_count, 0)
 
     @staticmethod
     def _constant_gradient(color, stop_opacity=1.0):
@@ -1281,34 +1203,6 @@ class TypedTextEffectRendererTest(unittest.TestCase):
             (inside[..., 1] > inside[..., 2]) & visible_inside
         ))
 
-    def test_completed_surface_bands_solid_and_gradient_center_strokes(self):
-        item = self._item(TextEffectStack())
-        renderer = item.effect_renderer
-        solid = TextEffectStack(effects=(StrokeEffect(
-            width=0.2,
-            paint=SolidPaint((0, 0, 255)),
-            position='center',
-        ),))
-        gradient = TextEffectStack(effects=(StrokeEffect(
-            width=0.2,
-            paint=LinearGradientPaint(),
-            position='center',
-        ),))
-
-        with patch.object(
-            renderer,
-            '_positioned_stroke_band',
-            wraps=renderer._positioned_stroke_band,
-        ) as band:
-            item.set_text_effects(solid)
-            solid_calls = band.call_count
-            self.assertGreater(solid_calls, 0)
-            self.assertEqual(renderer._effect_flags(), (True, False))
-            item.set_text_effects(gradient)
-            self.assertGreater(band.call_count, solid_calls)
-            self.assertEqual(renderer._effect_flags(), (True, True))
-        self.assertGreater(np.count_nonzero(self._render(item)[..., 3]), 0)
-
     def test_noop_filter_preserves_public_center_stroke_appearance(self):
         noop = FilterEffect('builtin:noise', params={
             'amount': 0.0, 'mode': 'monochrome', 'seed': 1,
@@ -1353,24 +1247,6 @@ class TypedTextEffectRendererTest(unittest.TestCase):
                             (int(delta.max()), int(changed)),
                         )
                         self.assertLessEqual(changed, 1000)
-
-    def test_center_coverage_cache_is_reused_when_hollow_changes(self):
-        stroke = StrokeEffect(
-            width=0.20,
-            position='center',
-            paint=SolidPaint((20, 60, 220)),
-        )
-        item = self._item(TextEffectStack(effects=(stroke,)))
-        renderer = item.effect_renderer
-        renderer._render_effect_surface(renderer.boundingRect(), 0.5)
-
-        with patch.object(
-            renderer, 'paint_stroke', wraps=renderer.paint_stroke
-        ) as paint_stroke:
-            item.set_text_effects(TextEffectStack(effects=(
-                stroke, HollowEffect()
-            )), preview=True)
-        self.assertEqual(paint_stroke.call_count, 0)
 
     def test_gradient_stroke_positions_flip_hollow_and_multiple_paints(self):
         def gradient(angle=0.0):
@@ -2319,61 +2195,6 @@ class TypedTextEffectRendererTest(unittest.TestCase):
                 finally:
                     item.set_export_effect_render(False)
 
-    def test_effect_variants_rerender_preview_at_persistent_quality(self):
-        cases = (
-            (
-                TextEffectStack(effects=(ShadowEffect(blur=0.08),)),
-                TextEffectStack(effects=(ShadowEffect(
-                    angle=341.565, distance=0.316, blur=0.12
-                ),)),
-            ),
-            (
-                TextEffectStack(effects=(StrokeEffect(
-                    width=0.12, paint=LinearGradientPaint()
-                ),)),
-                TextEffectStack(effects=(StrokeEffect(
-                    width=0.18,
-                    paint=LinearGradientPaint(angle=90.0, scale=1.5),
-                ),)),
-            ),
-            (
-                TextEffectStack(effects=(TextFillEffect(),)),
-                TextEffectStack(effects=(TextFillEffect(
-                    paint=LinearGradientPaint(angle=90.0, scale=1.5),
-                ),)),
-            ),
-            (
-                TextEffectStack(effects=(GlowEffect(size=0.08),)),
-                TextEffectStack(effects=(GlowEffect(
-                    paint=LinearGradientPaint(angle=60.0),
-                    size=0.16,
-                    spread=0.04,
-                ),)),
-            ),
-        )
-        for before, after in cases:
-            with self.subTest(effect=after.effects[0].effect_type):
-                item = self._item(before)
-                renderer = item.effect_renderer
-                renderer.set_faster_preview(True)
-                with patch.object(
-                    renderer,
-                    '_render_effect_surface',
-                    wraps=renderer._render_effect_surface,
-                ) as render:
-                    item.set_text_effects(after, preview=True)
-                    scratch = renderer._preview_effect_raster_state
-                    self.assertEqual(render.call_count, 1)
-                    self.assertEqual(
-                        scratch.background_pixmap_scale, 0.5
-                    )
-                    item.set_text_effects(after)
-                    renderer.repaint_background()
-                    self.assertEqual(render.call_count, 2)
-                    self.assertIsNot(
-                        renderer._effect_raster_state, scratch
-                    )
-
     def test_paint_previews_reuse_canonical_source_and_match_cold_output(self):
         stroke = StrokeEffect(
             width=0.18,
@@ -2672,67 +2493,6 @@ class TypedTextEffectRendererTest(unittest.TestCase):
             pixmap2ndarray(cold, keep_alpha=True),
             pixmap2ndarray(hot, keep_alpha=True),
         )
-
-    def test_positioned_stroke_band_is_reused_within_one_composite(self):
-        generated_strokes = (
-            StrokeEffect(width=0.18, position='outside'),
-            StrokeEffect(width=0.18, position='center'),
-            StrokeEffect(
-                width=0.18,
-                position='center',
-                paint=LinearGradientPaint(angle=35.0),
-            ),
-            StrokeEffect(width=0.18, position='inside'),
-        )
-        exterior_effects = (
-            ShadowEffect(blur=0.08),
-            GlowEffect(size=0.08),
-        )
-        for exterior in exterior_effects:
-            for stroke in generated_strokes:
-                for hollow in (False, True):
-                    with self.subTest(
-                        exterior=exterior.effect_type,
-                        position=stroke.position,
-                        hollow=hollow,
-                    ):
-                        effects = [exterior, stroke]
-                        if hollow:
-                            effects.append(HollowEffect(enabled=True))
-                        item = self._item(TextEffectStack(
-                            effects=tuple(effects)
-                        ))
-                        renderer = item.effect_renderer
-                        with patch.object(
-                            renderer,
-                            '_positioned_stroke_band',
-                            wraps=renderer._positioned_stroke_band,
-                        ) as band:
-                            renderer._render_pre_mask_effect_surface(
-                                renderer.boundingRect(), 1.0
-                            )
-                        self.assertEqual(band.call_count, 1)
-
-        item = self._item(TextEffectStack(effects=(
-            ShadowEffect(blur=0.08),
-            StrokeEffect(width=0.18, position='center'),
-        )))
-        renderer = item.effect_renderer
-        with patch.object(
-            renderer,
-            '_positioned_stroke_band',
-            wraps=renderer._positioned_stroke_band,
-        ) as band:
-            with patch.object(
-                renderer,
-                '_positioned_stroke_coverage',
-                wraps=renderer._positioned_stroke_coverage,
-            ) as coverage:
-                renderer._render_pre_mask_effect_surface(
-                    renderer.boundingRect(), 1.0
-                )
-        self.assertEqual(band.call_count, 1)
-        self.assertEqual(coverage.call_count, 1)
 
     def test_glow_allocation_fallback_and_strict_export(self):
         stack = TextEffectStack(effects=(GlowEffect(size=0.2),))

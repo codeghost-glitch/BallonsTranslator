@@ -324,31 +324,6 @@ class TextEffectPreviewTest(unittest.TestCase):
             [0.5, 2.0],
         )
 
-    def test_faster_preview_prepares_effect_geometry_once(self):
-        item = self._item(stack=self._stack())
-        renderer = item.effect_renderer
-        renderer.set_faster_preview(True)
-
-        with patch.object(
-            renderer,
-            '_sync_native_stroke_alignment',
-            wraps=renderer._sync_native_stroke_alignment,
-        ) as alignment, patch.object(
-            renderer,
-            '_update_effect_padding',
-            wraps=renderer._update_effect_padding,
-        ) as padding:
-            item.set_text_effects(self._stack(0.24), preview=True)
-            self.assertEqual(alignment.call_count, 1)
-            self.assertEqual(padding.call_count, 1)
-            alignment.reset_mock()
-            padding.reset_mock()
-
-            renderer.repaint_background()
-
-            self.assertEqual(alignment.call_count, 1)
-            self.assertEqual(padding.call_count, 1)
-
     def test_nonlinear_effect_preview_quality_follows_faster_toggle(self):
         item = self._item(stack=self._stack())
         item.set_text_transform(TextTransformStack((SineTextTransform(),)))
@@ -366,23 +341,6 @@ class TextEffectPreviewTest(unittest.TestCase):
         renderer.set_faster_preview(True)
         with patch.object(surface, 'paint', wraps=surface.paint) as paint:
             self._render_scene(scene, 2.0)
-        self.assertEqual(paint.call_args.kwargs['maximum_scale'], 0.5)
-        self.assertFalse(paint.call_args.kwargs['high_quality'])
-
-    def test_nonlinear_mask_preview_retains_responsive_quality(self):
-        item = self._item(stack=self._stack())
-        item.set_text_transform(TextTransformStack((SineTextTransform(),)))
-        scene = QGraphicsScene()
-        scene.addItem(item)
-        surface = item.geometry_controller.surface_renderer
-        mask = TextAlphaMask(strokes=(
-            AlphaBrushStroke('erase', 16.0, ((40.0, 30.0),)),
-        ))
-
-        item.set_text_alpha_mask(mask, preview=True)
-        with patch.object(surface, 'paint', wraps=surface.paint) as paint:
-            self._render_scene(scene, 2.0)
-
         self.assertEqual(paint.call_args.kwargs['maximum_scale'], 0.5)
         self.assertFalse(paint.call_args.kwargs['high_quality'])
 

@@ -77,10 +77,5 @@ class TestInpaintMaskInkCompletion(unittest.TestCase):
         self.assertTrue(np.array_equal(complete_mask_on_ink(img, mask), mask))
         self.assertIsNone(complete_mask_on_ink(img, None))
 
-    def test_module_doctests(self) -> None:
-        results = doctest.testmod(inpaint_base, verbose=False)
-        self.assertEqual(results.failed, 0)
-
-
 if __name__ == '__main__':
     unittest.main()

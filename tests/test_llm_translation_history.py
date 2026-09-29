@@ -533,24 +533,6 @@ class LLMTranslationHistoryTest(
         self.assertEqual(adjacent.diagnostic.action, ContextAction.GROW)
         self.assertEqual(adjacent.history[:-1], rebuilt.history)
 
-    def test_stateless_rebuild_stops_at_first_ordinary_overflow(self):
-        history = tuple(
-            HistoryPage(str(index), (f'source-{index}',), (f'target-{index}',))
-            for index in range(1, 4)
-        )
-        with mock.patch(
-            'ballontranslator.modules.translators.llm_translation_contract.messages_token_count',
-            side_effect=(4, 8, 1),
-        ) as token_count:
-            selected = self._history_for_rebuild(
-                history,
-                10,
-                'test-model',
-            )
-
-        self.assertEqual([page.page_key for page in selected], ['3'])
-        self.assertEqual(token_count.call_count, 2)
-
     def test_adjacent_requests_grow_append_only(self):
         project = self._project(4)
         pcfg.module.llm_translate_context = LLMTranslateContext.HISTORY

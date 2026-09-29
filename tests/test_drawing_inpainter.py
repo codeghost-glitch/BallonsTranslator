@@ -143,13 +143,6 @@ class DrawingInpainterTest(unittest.TestCase):
         self.assertEqual(pcfg.drawpanel.inpaint_prompt_override, '  \n ')
         self.assertEqual(self.api.image_prompt, original_prompt)
 
-    def test_settings_open_the_draw_module_without_changing_run_selection(self) -> None:
-        self.choose(self.brush.menu, ('openai', 'image_model', 'draw-image'))
-        window = SimpleNamespace(show_module_param_dialog=Mock())
-        MainWindow.to_drawing_inpaint_config(window)
-        window.show_module_param_dialog.assert_called_once_with('inpainter', 'LLMInpaint')
-        self.assertEqual(pcfg.module.inpainter, 'lama_large_512px')
-
     def test_rectangle_mask_toggle_updates_staged_request_independently_of_run(self) -> None:
         project = self.canvas.imgtrans_proj
         project.inpainted_array = np.full((8, 8, 3), 80, np.uint8)

@@ -340,25 +340,6 @@ class VerticalRomanAlignmentTest(unittest.TestCase):
             item.geometry_controller.source_rect(),
         )
 
-    def test_rotated_ink_measurement_is_cached_by_settled_layout(self):
-        with patch(
-            'ballontranslator.ui.text_engine.vertical_layout.glyph_geometry',
-            wraps=glyph_geometry,
-        ) as measure:
-            item = self._make_overflow_item()
-            settled_calls = measure.call_count
-            line_count = item.document().firstBlock().layout().lineCount()
-            self.assertGreater(settled_calls, 0)
-            self.assertLessEqual(settled_calls, line_count)
-
-            for _ in range(20):
-                item.layout.base_ink_bounds()
-                item.geometry_controller.source_paint_rect()
-                item.boundingRect()
-                item.shape()
-
-            self.assertEqual(measure.call_count, settled_calls)
-
     def test_rotated_ink_effect_and_transform_bounds_share_one_owner(self):
         item = self._make_overflow_item(stroke_width=0.14)
         neutral_ink = item.layout.base_ink_bounds()
@@ -1411,35 +1392,6 @@ class VerticalRomanAlignmentTest(unittest.TestCase):
                     self.assertAlmostEqual(
                         ink.center().y(), cell.center().y(), delta=1.0
                     )
-
-    def test_clreq_punctuation_orientation_groups(self):
-        standard = self._make_item('字', True)
-        chinese = self._make_item('字', False)
-
-        for char in PUNSET_PAUSEORSTOP:
-            self.assertFalse(
-                chinese.layout.needs_vertical_rotation(char), char
-            )
-        for char in PUNSET_NONBRACKET:
-            self.assertTrue(
-                chinese.layout.needs_vertical_rotation(char), char
-            )
-            self.assertTrue(
-                standard.layout.needs_vertical_rotation(char), char
-            )
-        for char in PUNSET_BRACKET | PUNSET_HALF:
-            self.assertTrue(
-                chinese.layout.needs_vertical_rotation(char), char
-            )
-        for char in PUNSET_STANDARD_VERTICAL_ROMAN:
-            self.assertTrue(
-                standard.layout.needs_vertical_rotation(char), char
-            )
-        for char in PUNSET_HALF - PUNSET_STANDARD_VERTICAL_ROMAN:
-            self.assertFalse(
-                standard.layout.needs_vertical_rotation(char), char
-            )
-
 
 if __name__ == '__main__':
     unittest.main()

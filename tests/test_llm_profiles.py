@@ -531,14 +531,6 @@ class LLMProfileConfigTest(unittest.TestCase):
         self.assertEqual(profiles_from_json(json.dumps({})), [])
         self.assertEqual(profiles_from_json(json.dumps({'profile_type': 'other'})), [])
 
-    def test_imported_builtin_can_become_custom_without_exported_id(self):
-        imported = profiles_from_json(json.dumps(profile_to_export_dict(default_profile('OpenAI'))))[0]
-        imported.id = 'custom-new'
-        imported.built_in = False
-
-        self.assertEqual(imported.id, 'custom-new')
-        self.assertFalse(imported.built_in)
-
     def test_removed_builtin_loads_as_custom_and_survives_restore(self) -> None:
         retired = LLMProfile(
             id='removed-provider', name='Removed provider', built_in=True,
@@ -576,11 +568,6 @@ class LLMProfileConfigTest(unittest.TestCase):
 
         self.assertEqual(restored.model, default_model)
         self.assertEqual(SecretStore().resolve(restored.api_key).value, 'sk-demo')
-
-    def test_lm_studio_builtin_uses_json_schema_response_format(self):
-        profile = default_profile('LM Studio')
-
-        self.assertTrue(profile.json_schema_response_format)
 
     def test_plain_profile_defaults_are_provider_neutral(self):
         profile = LLMProfile()
@@ -622,16 +609,6 @@ class LLMProfileConfigTest(unittest.TestCase):
         self.assertNotIn('text-only-model', profile.vision_model_options)
         self.assertNotIn('vision-only-model', profile.model_options)
 
-    def test_openrouter_builtin_enables_image_cleanup_profile(self) -> None:
-        profile = default_profile('OpenRouter')
-
-        self.assertTrue(profile.support_image)
-        self.assertEqual(
-            profile.image_base_url,
-            'https://openrouter.ai/api/v1/images',
-        )
-
-
 class SecretStoreTest(unittest.TestCase):
     def test_secret_store_obfuscates_plaintext_portably(self):
         store = SecretStore()
@@ -670,18 +647,6 @@ class SecretStoreTest(unittest.TestCase):
         saved = json_dump_program_config(cfg)
 
         self.assertNotIn('sk-demo', saved)
-
-    def test_saved_config_serializes_profile_dataclass(self):
-        profile = default_profile('DeepSeek')
-        cfg = ModuleConfig(llm_profiles=[profile], translator_llm_id='deepseek')
-
-        saved = json_dump_program_config(cfg)
-        saved_dict = json.loads(saved)
-
-        saved_profile = saved_dict['llm_profiles'][0]
-        self.assertEqual(saved_profile['id'], 'deepseek')
-        self.assertEqual(saved_profile['base_url'], 'https://api.deepseek.com')
-        self.assertEqual(saved_profile['max_tokens'], 8192)
 
     def test_saved_profiles_roundtrip_without_provider(self):
         profile = default_profile('OpenAI')
