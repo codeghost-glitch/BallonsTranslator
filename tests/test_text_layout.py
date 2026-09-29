@@ -28,6 +28,29 @@ class TestHyphenateLongWords(unittest.TestCase):
             (words, wl),
         )
 
+    def test_interjection_is_not_hyphenated(self) -> None:
+        # A tight balloon holding a 5-character interjection used to
+        # force-break it into 'Wha-t?'. Words under the typographic floor
+        # stay whole; the fit shrinks them instead.
+        words, wl = ['What?'], [400]
+        self.assertEqual(
+            hyphenate_long_words(words, wl, lambda s: len(s) * 10, 'en', 60),
+            (words, wl),
+        )
+
+    def test_word_at_the_floor_still_splits(self) -> None:
+        # The floor must not swallow real hyphenation: a 6-character word
+        # too wide for the budget still breaks.
+        if not HAS_PYPHEN:
+            self.skipTest('pyphen not installed')
+        measure = lambda s: len(s) * 10
+        words, _ = hyphenate_long_words(['cannot'], [60], measure, 'en', 30)
+        self.assertGreater(len(words), 1)
+        self.assertEqual(
+            ''.join(w[:-1] if w.endswith(BREAK) else w for w in words),
+            'cannot',
+        )
+
     def test_long_token_splits_at_linguistic_point(self) -> None:
         if not HAS_PYPHEN:
             self.skipTest('pyphen not installed')

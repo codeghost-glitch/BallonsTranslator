@@ -130,6 +130,13 @@ def line_is_valid(line: Line, new_len: int, delimiter_len, max_width, words_leng
 # mark, restoring a visible hyphen where the break ends the line.
 _HYPHEN_BREAK = '\x1e'
 
+# Typographic minimum for splitting a word. Below it a 2+2 break leaves a
+# fragment that reads as a typo ("Wha-t?"), and forcing one costs more than
+# the slightly smaller unsplit word costs in a tight balloon. Shared by the
+# advisory pre-split and the in-line break, which must agree or a word that
+# the pre-split leaves whole still gets broken later.
+_MIN_HYPHEN_WORD = 6
+
 
 def _hyphen_head_for_line(
     line: Line, word: str, hyphenator, measure, delimiter_len,
@@ -144,6 +151,8 @@ def _hyphen_head_for_line(
     if hyphenator is None or measure is None:
         return None
     best = None
+    if len(word) < _MIN_HYPHEN_WORD:
+        return None
     for p in hyphenator.positions(word):
         if p <= 0 or p >= len(word):
             continue
@@ -681,9 +690,11 @@ def hyphenate_long_words(
     Candidates are advisory: the caller derives them per layout attempt from
     its pristine word list and tries the unhyphenated layout first, so a
     break that was not needed never survives into a passing layout. Tokens
-    shorter than five characters stay whole, and every break keeps at least
+    shorter than six characters stay whole, and every break keeps at least
     two characters on each side, which keeps single-syllable fragments out
-    of ordinary prose.
+    of ordinary prose. The six-character floor is a typographic minimum: a
+    shorter word split 2+2 leaves a fragment that reads as a typo, and
+    forcing one costs more than the slightly smaller unsplit word.
 
     A token pyphen cannot split at a linguistic point (a URL, a sound
     effect, a foreign run) is force-broken at the widest prefix that fits.
@@ -703,6 +714,8 @@ def hyphenate_long_words(
     (['ex\x1e', 'traor\x1e', 'dinary'], [30, 60, 60])
     >>> hyphenate_long_words(['onto'], [400], lambda s: len(s) * 10, 'en', 60)
     (['onto'], [400])
+    >>> hyphenate_long_words(['What?'], [400], lambda s: len(s) * 10, 'en', 60)
+    (['What?'], [400])
     """
     if not words or max_width <= 0:
         return words, wl_list
@@ -716,6 +729,11 @@ def hyphenate_long_words(
         # Balloon-tight fragment bounds: a two-character wing on either
         # side is the smallest piece that still reads as part of a word.
         min_prefix, min_suffix = 2, 2
+        # See _MIN_HYPHEN_WORD: a short word stays whole and simply shrinks.
+        if len(word) < _MIN_HYPHEN_WORD:
+            out_words.append(word)
+            out_wl.append(width)
+            continue
         # Cut the word into as many segments as it takes to fit the line.
         # Segments that land on one line are joined back together at render
         # (see _join_hyphen_runs); only a segment that actually ends the
