@@ -689,7 +689,7 @@ class SceneTextManager(QObject):
             blk_item.idx = len(self.textblk_item_list)
         else:
             translation = ''
-            if self.auto_textlayout_flag and not blk.vertical:
+            if self.auto_textlayout_flag:
                 translation = blk.translation
                 blk.translation = ''
                 # Layout must fit against the block's detected box; persisted
@@ -1024,10 +1024,176 @@ class SceneTextManager(QObject):
             self._update_selection_panels([item])
         session.activate_last_projective(item)
 
+    def _vertical_fit_balloon_box(
+        self,
+        blkitem: TextBlkItem,
+        mask: np.ndarray,
+        bounding_rect: List,
+        region_rect: List,
+    ) -> Optional[Tuple[float, float]]:
+        """Return the (width, height) the settled vertical columns must fit.
+
+        Prefers the balloon mask, exactly as the horizontal path does, so a
+        vertical block is measured against the same region its horizontal
+        peers use. Falls back to the block's own detection box when no mask
+        is available (a free-standing margin note with no balloon).
+
+        >>> callable(SceneTextManager._vertical_fit_balloon_box)
+        True
+        """
+        if mask is not None and getattr(mask, 'size', 0):
+            ys, xs = np.nonzero(mask)
+            if ys.size:
+                return float(xs.max() - xs.min() + 1), float(ys.max() - ys.min() + 1)
+        rect = bounding_rect or region_rect
+        if rect is not None and len(rect) >= 4 and rect[2] > 0 and rect[3] > 0:
+            return float(rect[2]), float(rect[3])
+        db = getattr(blkitem.blk, '_detected_bbox', None)
+        if db is not None and len(db) >= 4 and db[2] > 0 and db[3] > 0:
+            return float(db[2]), float(db[3])
+        return None
+
+    def _layout_textblk_vertical(
+        self,
+        blkitem: TextBlkItem,
+        text: str = None,
+        mask: np.ndarray = None,
+        bounding_rect: List = None,
+        region_rect: List = None,
+    ) -> bool:
+        """Balloon-aware auto-typeset for vertical (tategaki) writing.
+
+        The vertical layout flows glyphs down a column and starts a new column
+        leftward when the column reaches ``available_height``, so the settled
+        content's horizontal extent - the width spanned by all its columns -
+        grows with the font exactly as the horizontal canvas grows with line
+        count. That extent is the fit signal: probe a candidate size, keep the
+        largest whose column block still fits the balloon, and center it.
+
+        Unlike the horizontal loop there is no shrink pass: an oversized font
+        makes the layout auto-enlarge its own box (VerticalTextDocumentLayout
+        grows ``max_width`` when the leftmost column crosses the padding), and
+        the balloon is the hard ceiling we measure against, never something
+        the layout should be allowed to grow into.
+        """
+        if text is None:
+            text = blkitem.toPlainText()
+        # The caller clears blk.translation so the item is built from the
+        # detected box rather than a persisted rich_text size. Populate the
+        # document before any early return: when the fit declines (auto-typeset
+        # off, no usable box) the caller's setPlainText fallback does not fire
+        # for a False return, so the text would otherwise be lost.
+        if text and blkitem.toPlainText() != text:
+            blkitem.setPlainText(text)
+
+        if not (self.auto_textlayout_flag
+                and pcfg.let_fntsize_flag == 0
+                and pcfg.let_autolayout_flag):
+            return False
+
+        if not text.strip():
+            return False
+
+        box = self._vertical_fit_balloon_box(blkitem, mask, bounding_rect, region_rect)
+        if box is None:
+            return False
+        box_w, box_h = box
+        if box_w < 1 or box_h < 1:
+            return False
+
+        font = blkitem.font()
+        start = font.pointSizeF()
+        if start <= 0:
+            return False
+        min_size = max(start * 0.15, 1.0)
+
+        def settled_content_width(size: float) -> float:
+            """Lay the block out at ``size`` inside the balloon and measure
+            the settled horizontal extent of its columns."""
+            blkitem.setFontSize(size)
+            blkitem.set_size(
+                box_w, box_h, set_layout_maxsize=True, set_blk_size=False,
+            )
+            return float(blkitem.layout._column_content_width())
+
+        # Step up while the columns still fit, remembering the last size that
+        # did. A 1.12 geometric step over ~14 probes spans the useful range
+        # from a near-floor size to several times the default without the
+        # binary search's oscillation between two neighbouring sizes.
+        best = start
+        best_width = settled_content_width(start)
+        if best_width > box_w:
+            # Already too wide at the stored size: fall back to shrinking
+            # rather than growing, so an over-large saved font converges.
+            size = start
+            while size > min_size:
+                size = max(min_size, size * 0.85)
+                width = settled_content_width(size)
+                if width <= box_w:
+                    best, best_width = size, width
+                    break
+            else:
+                best, best_width = min_size, settled_content_width(min_size)
+        else:
+            size = start
+            for _ in range(14):
+                candidate = size * 1.12
+                width = settled_content_width(candidate)
+                if width > box_w:
+                    break
+                size, best, best_width = candidate, candidate, width
+
+        # Re-apply the winning size and box, then center the settled item on
+        # the balloon so it neither hugs the top nor rides the panel edge.
+        blkitem.setFontSize(best)
+        blkitem.set_size(box_w, box_h, set_layout_maxsize=True, set_blk_size=False)
+        # setFontSize applies the size as a range format; re-sync the document
+        # default so a later pass that reads font() (or inserts text) inherits
+        # the fitted size, exactly as the horizontal path does after its
+        # setPlainText.
+        blkitem.document().setDefaultFont(blkitem.font())
+
+        # Center the settled text box on the balloon itself, mirroring the
+        # horizontal path's re-measure-and-move loop: the first moveBy
+        # re-anchors the rect through the geometry controller.
+        if mask is not None and getattr(mask, 'size', 0):
+            ys, xs = np.nonzero(mask)
+        else:
+            ys = xs = None
+        if ys is not None and ys.size:
+            cx, cy = float(xs.min() + xs.max()) / 2, float(ys.min() + ys.max()) / 2
+        else:
+            rect = bounding_rect or region_rect
+            if rect is not None and len(rect) >= 4:
+                cx, cy = rect[0] + rect[2] / 2, rect[1] + rect[3] / 2
+            else:
+                db = getattr(blkitem.blk, '_detected_bbox', None)
+                if db is None or len(db) < 4:
+                    return False
+                cx, cy = db[0] + db[2] / 2, db[1] + db[3] / 2
+        # Squeeze the box to the settled content first, then center it, the
+        # same order the horizontal path uses: centering measures the rect
+        # the canvas renders, so it must run after the last size change.
+        blkitem.squeezeBoundingRect()
+        for _ in range(3):
+            br = blkitem.absBoundingRect(qrect=True)
+            dx = cx - (br.x() + br.width() / 2)
+            dy = cy - (br.y() + br.height() / 2)
+            if abs(dx) <= 1 and abs(dy) <= 1:
+                break
+            blkitem.moveBy(dx, dy)
+        LOGGER.debug(
+            'vertical fit: font=%.2f content_w=%.1f box=%dx%d txt=%r',
+            best, best_width, box_w, box_h, text[:36],
+        )
+        return True
+
     def layout_textblk(self, blkitem: TextBlkItem, text: str = None, mask: np.ndarray = None, bounding_rect: List = None, region_rect: List = None):
         
         '''
-        auto text layout, vertical writing is not supported yet.
+        auto text layout. Vertical (tategaki) writing is fitted by
+        _layout_textblk_vertical, which measures the settled column extent
+        instead of a horizontal line canvas.
         '''
 
         img = self.imgtrans_proj.img_array
@@ -1036,9 +1202,9 @@ class SceneTextManager(QObject):
         src_is_cjk = is_cjk(pcfg.module.translate_source)
         tgt_is_cjk = is_cjk(pcfg.module.translate_target)
 
-        # disable for vertical writing
+        # vertical writing takes its own fit path
         if blkitem.blk.vertical:
-            return
+            return self._layout_textblk_vertical(blkitem, text, mask, bounding_rect, region_rect)
         
         old_br = blkitem.absBoundingRect(qrect=True)
         old_br = [old_br.x(), old_br.y(), old_br.width(), old_br.height()]
