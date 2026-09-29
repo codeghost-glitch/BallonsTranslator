@@ -120,6 +120,12 @@ class TextBlock:
     translation: str = ""
     rich_text: str = ""
     _bounding_rect: List = None
+    # The detector's box, xywh. Kept as a field so it survives save/load:
+    # layout fits measure against it, and the fallback (_bounding_rect) is the
+    # previous pass's *text* box, which squeezes toward the text and ratchets
+    # the fit down a little more on every re-run. A block detected before this
+    # field existed simply loads with None and keeps the old fallback.
+    _detected_bbox: List = None
     src_is_vertical: bool = None
     _detected_font_size: float = -1
     det_model: str = None
@@ -533,12 +539,44 @@ class TextBlock:
     # equivalent to qt's boundingRect, ignore angle
     def bounding_rect(self) -> List[int]:
         if self._bounding_rect is None:
-        # if True:
+            # if True:
             min_bbox = self.min_rect(rotate_back=False)[0]
             x, y = min_bbox[0]
             w, h = min_bbox[2] - min_bbox[0]
             return [int(x), int(y), int(w), int(h)]
         return self._bounding_rect
+
+    def detected_rect(self) -> List[int]:
+        """The box the detector found, as xywh.
+
+        Layout fits measure against this, not ``bounding_rect()``: that one is
+        the previous pass's *rendered text* box, and squeeze plus re-layout
+        shrink it toward the text, so a window built from it ratchets down a
+        little on every re-run until growth has no room left. The detected
+        geometry stays put until the next detect run, and a user move or
+        reshape resyncs ``xyxy`` from the item rect, so it is never stale for a
+        block the user has placed by hand.
+
+        >>> block = TextBlock(xyxy=[0, 0, 2, 2],
+        ...                   lines=[[[0, 0], [4, 0], [4, 3], [0, 3]]])
+        >>> block.bounding_rect()      # no render yet: falls back to lines
+        [0, 0, 4, 3]
+        >>> block.detected_rect()
+        [0, 0, 4, 3]
+        >>> block._bounding_rect = [1, 1, 2, 2]   # the text box after a pass
+        >>> block.bounding_rect()
+        [1, 1, 2, 2]
+        >>> block.detected_rect()
+        [0, 0, 4, 3]
+        """
+        if self._detected_bbox:
+            box = self._detected_bbox
+            return [int(v) for v in box]
+        lines = np.asarray(self.lines, dtype=np.float64).reshape(-1, 2)
+        if lines.size:
+            (x0, y0), (x1, y1) = lines.min(axis=0), lines.max(axis=0)
+            return [int(x0), int(y0), int(x1 - x0), int(y1 - y0)]
+        return self.bounding_rect()
 
     def __getattribute__(self, name: str):
         if name == 'pts':

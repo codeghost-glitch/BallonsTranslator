@@ -476,12 +476,26 @@ def _block_xyxy(blk) -> List:
     >>> _block_xyxy(blk)
     [10, 20, 40, 80]
     """
-    det = getattr(blk, '_detected_bbox', None)
-    if det:
-        x, y, w, h = det
-    else:
-        x, y, w, h = blk.bounding_rect()
+    x, y, w, h = blk.detected_rect()
     return [int(x), int(y), int(x + w), int(y + h)]
+
+
+def _fit_window(blk) -> List:
+    """The box a fit measures against, xywh - never the rendered text box.
+
+    ``TextBlkItem`` writes the box it just rendered into ``_bounding_rect`` on
+    every save, and that box is squeezed toward the text, so seeding a fit
+    window from it shrinks the window on every re-run until growth has no room
+    left: the same text kept getting smaller on each pass, and a block that
+    could not fit ratcheted toward the floor. The detected box survives that
+    round trip (see ``TextBlock.detected_rect``).
+
+    >>> blk = TextBlock([10, 20, 40, 80])
+    >>> blk.set_lines_by_xywh([10, 20, 30, 60])
+    >>> _fit_window(blk)
+    [10, 20, 30, 60]
+    """
+    return [int(v) for v in blk.detected_rect()]
 
 
 def _shared_outline_window(window: List, blk, siblings: List) -> List:
@@ -496,11 +510,12 @@ def _shared_outline_window(window: List, blk, siblings: List) -> List:
     the same column - leaves that axis alone. A split that empties the
     window needs no special case: the caller keeps the unsplit band.
 
-    >>> class Block:
-    ...     _detected_bbox = [100, 0, 40, 50]
-    >>> class Sibling:
-    ...     _detected_bbox = [0, 0, 60, 50]
-    >>> _shared_outline_window([0, 0, 300, 60], Block(), [Sibling()])
+    >>> def block(x, y, w, h):
+    ...     blk = TextBlock([x, y, x + w, y + h])
+    ...     blk.set_lines_by_xywh([x, y, w, h])
+    ...     return blk
+    >>> _shared_outline_window([0, 0, 300, 60], block(100, 0, 40, 50),
+    ...                        [block(0, 0, 60, 50)])
     [80, 0, 300, 60]
     """
     x1, y1, x2, y2 = window
@@ -1085,8 +1100,8 @@ class SceneTextManager(QObject):
         rect = bounding_rect or region_rect
         if rect is not None and len(rect) >= 4 and rect[2] > 0 and rect[3] > 0:
             return float(rect[2]), float(rect[3])
-        db = getattr(blkitem.blk, '_detected_bbox', None)
-        if db is not None and len(db) >= 4 and db[2] > 0 and db[3] > 0:
+        db = _fit_window(blkitem.blk)
+        if len(db) >= 4 and db[2] > 0 and db[3] > 0:
             return float(db[2]), float(db[3])
         return None
 
@@ -1207,8 +1222,8 @@ class SceneTextManager(QObject):
             if rect is not None and len(rect) >= 4:
                 cx, cy = rect[0] + rect[2] / 2, rect[1] + rect[3] / 2
             else:
-                db = getattr(blkitem.blk, '_detected_bbox', None)
-                if db is None or len(db) < 4:
+                db = _fit_window(blkitem.blk)
+                if len(db) < 4:
                     return False
                 cx, cy = db[0] + db[2] / 2, db[1] + db[3] / 2
 
@@ -1381,14 +1396,14 @@ class SceneTextManager(QObject):
         released_axis_centre = [None, None]
         if mask is None:
             im_h, im_w = img.shape[:2]
-            # Fit against the detection box, not the item rect: squeeze and
+            # Fit against the detected box, not the item rect: squeeze and
             # re-layout shrink the item toward its text, and a window built
             # from it ratchets down until growth has no room left. The
-            # detection box stays put until the next detect run. Rich-text
+            # detected box stays put until the next detect run, and survives
+            # the save/load round trip (see _fit_window). Rich-text
             # init and oversized blocks can push it past the page edge, and
             # enlarge_window inverts when that happens - clamp first.
-            detected_box = getattr(blkitem.blk, '_detected_bbox', None)
-            bounding_rect = list(detected_box) if detected_box else list(blkitem.blk.bounding_rect())
+            bounding_rect = _fit_window(blkitem.blk)
             bx, by = max(bounding_rect[0], 0), max(bounding_rect[1], 0)
             bw = min(bounding_rect[0] + bounding_rect[2], im_w) - bx
             bh = min(bounding_rect[1] + bounding_rect[3], im_h) - by
