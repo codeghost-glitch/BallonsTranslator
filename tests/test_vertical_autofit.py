@@ -115,6 +115,26 @@ class TestVerticalAutoFit(unittest.TestCase):
         item, ok = self._fit([100, 100, 165, 266], CJK_TEXT)
         self.assertFalse(ok)
 
+    def test_declines_for_non_cjk_target(self) -> None:
+        # A vertical Japanese source translated into a Latin/SE-Asian script
+        # must NOT be fitted as vertical: the pipeline forces blk.vertical =
+        # False for non-CJK targets after layout, so a vertical fit would
+        # hand column-shaped geometry to horizontal text. This is what broke
+        # English typesetting off Japanese pages.
+        for target in ('English', 'ไทย', 'Tiếng Việt'):
+            with self.subTest(target=target):
+                pcfg.module.translate_target = target
+                item, ok = self._fit([100, 100, 165, 266], CJK_TEXT)
+                self.assertFalse(ok)
+
+    def test_accepts_for_cjk_target(self) -> None:
+        # The Chinese targets that motivated the feature still fit.
+        for target in ('繁體中文', '简体中文'):
+            with self.subTest(target=target):
+                pcfg.module.translate_target = target
+                item, ok = self._fit([100, 100, 165, 266], CJK_TEXT)
+                self.assertTrue(ok)
+
     def test_decline_keeps_text_on_item(self) -> None:
         # When the fit declines (auto-typeset off) the translation must still
         # reach the item: the caller clears blk.translation first and only

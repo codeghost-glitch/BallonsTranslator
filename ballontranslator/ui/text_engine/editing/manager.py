@@ -1142,6 +1142,17 @@ class SceneTextManager(QObject):
                 and pcfg.let_autolayout_flag):
             return False
 
+        # A vertical *source* does not mean a vertical *target*. The pipeline
+        # forces blk.vertical = False for every non-CJK target in
+        # postprocess_translations, after layout has already run. Fitting
+        # such a block as vertical here would size and shape it for columns
+        # and then hand that geometry to horizontal text, which is what broke
+        # English typesetting off Japanese pages. Decline so the block falls
+        # through untouched, exactly as it did before vertical fitting
+        # existed.
+        if not is_cjk(pcfg.module.translate_target):
+            return False
+
         if not text.strip():
             return False
 
