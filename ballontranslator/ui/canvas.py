@@ -1755,9 +1755,9 @@ class Canvas(QGraphicsScene):
             angle_act = menu.addAction(self.tr("Reset Angle"))
             squeeze_act = menu.addAction(self.tr("Squeeze"))
             outlines_act = menu.addAction(
-                self.tr("Show bubble outlines")
+                self.tr("Hide bubble outlines")
                 if self.bubble_outlines_visible()
-                else self.tr("Hide bubble outlines")
+                else self.tr("Show bubble outlines")
             )
             menu.addSeparator()
             translate_act = menu.addAction(self.tr("translate"))
