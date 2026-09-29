@@ -695,6 +695,15 @@ class SceneTextManager(QObject):
             blk_item.idx = len(self.textblk_item_list)
         else:
             translation = ''
+            # A vertical *source* only typesets vertically for a CJK target;
+            # the pipeline forces blk.vertical = False for every other script
+            # in postprocess_translations, but that runs after this item is
+            # built. Decide it here so a Japanese page translated to English
+            # is laid out - and auto-fitted - horizontally. Leaving the block
+            # vertical here would either fit it as columns (wrong shape) or
+            # skip fitting entirely, and the text would overflow the balloon.
+            if blk.vertical and not is_cjk(pcfg.module.translate_target):
+                blk.vertical = False
             if self.auto_textlayout_flag:
                 translation = blk.translation
                 blk.translation = ''
