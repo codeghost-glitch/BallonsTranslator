@@ -49,5 +49,35 @@ class TestRTLMirroring(unittest.TestCase):
         self.assertEqual(block.alignment, TextAlignment.Center)
 
 
+class TestSpacelessScriptSegmentation(unittest.TestCase):
+    """Languages written without spaces must still wrap across lines."""
+
+    def test_thai_segments_into_words(self) -> None:
+        from ballontranslator.utils.text_processing import seg_text
+        try:
+            import pythainlp  # noqa: F401
+        except ImportError:
+            self.skipTest('pythainlp not installed')
+        words, _ = seg_text('นี่คือการทดสอบ', 'Thai')
+        # Real word boundaries, not one unbreakable blob.
+        self.assertGreater(len(words), 1)
+        self.assertEqual(''.join(words), 'นี่คือการทดสอบ')
+
+    def test_other_spaceless_scripts_do_not_become_one_blob(self) -> None:
+        from ballontranslator.utils.text_processing import seg_text
+        for lang, text in (('Khmer', 'នេះជាការសាកល្បង'),
+                           ('Burmese', 'ဤသည်မှာစမ်းသပ်မှု')):
+            with self.subTest(lang=lang):
+                words, _ = seg_text(text, lang)
+                self.assertGreater(len(words), 1,
+                                   f'{lang} collapsed to one unbreakable blob')
+
+    def test_space_languages_unchanged(self) -> None:
+        from ballontranslator.utils.text_processing import seg_text
+        words, delim = seg_text('hello world', 'English')
+        self.assertEqual(words, ['hello', 'world'])
+        self.assertEqual(delim, ' ')
+
+
 if __name__ == '__main__':
     unittest.main()

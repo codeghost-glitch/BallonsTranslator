@@ -49,6 +49,7 @@ DEFAULT_PACKAGE_IMPORT_NAMES = {
     'pyyaml': ['yaml'],
     'pyspellchecker': ['spellchecker'],
     'spacy-pkuseg': ['spacy_pkuseg'],
+    'pythainlp': ['pythainlp'],
 }
 
 RUNTIME_CONSTRAINED_PACKAGES = (

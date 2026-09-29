@@ -17,6 +17,19 @@ FULL2HALF[0x3002] = 0x2E
 LANGSET_CJK = {'简体中文', '繁體中文', '日本語'}
 LANGSET_CH = {'简体中文', '繁體中文'}
 
+# Languages written without spaces between words. Chinese/Japanese segment
+# via pkuseg; Thai segments via pythainlp; the rest (Khmer, Lao, Burmese,
+# Tibetan) have no bundled segmenter yet and fall back to per-character
+# wrapping so the text still breaks across lines instead of becoming one
+# unbreakable blob. Keyed by the display names the translator modules store.
+LANGSET_SE_ASIAN = {
+    'Thai', 'Khmer', 'Lao', 'Burmese', 'Tibetan',
+    'ไทย', 'ខ្មែរ', 'ລາວ', 'မြန်မာ', 'བོད་སྐད་',
+}
+LANGSET_THAI = {'Thai', 'ไทย'}
+
+THAISEG = None
+
 PUNSET_RIGHT_ENG = {'.', '?', '!', ':', ';', ')', '}', "\""}
 PUNCTUATION_L = {'「', '『', '【', '《', '〈', '〔', '［', '｛', '（', '(', '[', '{', '“', '‘'}
 SENTENCE_TERMINATORS = frozenset('.!?。！？')
@@ -343,11 +356,59 @@ def seg_ch_pkg(text: str):
         result_list = [half_len(word) for word in result_list]
     return result_list
 
+
+def seg_thai_pkg(text: str) -> List[str]:
+    """Segment a Thai string into words for line wrapping.
+
+    Thai is written without spaces between words, so the space splitter
+    would treat a whole sentence as one unbreakable token. pythainlp's
+    bundled ``newmm`` engine supplies the dictionary; it is imported lazily
+    (like pkuseg for Chinese) so the cost is paid only when a Thai target
+    is actually laid out. Without it the text falls back to per-character
+    wrapping, which still breaks across lines.
+
+    >>> seg_thai_pkg('นี่คือการทดสอบ')   # doctest: +SKIP
+    ['นี่', 'คือ', 'การ', 'ทดสอบ']
+    """
+    if not text:
+        return []
+    global THAISEG
+    if THAISEG is None:
+        try:
+            from pythainlp.tokenize import word_tokenize
+            THAISEG = word_tokenize
+        except Exception as e:
+            print(f'pythainlp unavailable ({e}); Thai text wraps per character')
+            THAISEG = False
+    if THAISEG is False:
+        return seg_to_chars(text)
+    # Split on real spaces first (mixed Thai/Latin lines), segment each run.
+    out = []
+    for chunk in text.split(' '):
+        if not chunk:
+            continue
+        if not any('฀' <= ch <= '๿' for ch in chunk):
+            out.append(chunk)
+            continue
+        try:
+            out.extend(THAISEG(chunk, keep_whitespace=False, engine='newmm'))
+        except Exception:
+            out.extend(seg_to_chars(chunk))
+    return out
+
+
 def seg_text(text: str, lang: str) -> Tuple[List, str]:
     delimiter = ''
     if lang in LANGSET_CH:
-        words = seg_ch_pkg(text)    
+        words = seg_ch_pkg(text)
+    elif lang in LANGSET_THAI:
+        words = seg_thai_pkg(text)
     elif lang in LANGSET_CJK:
+        words = seg_to_chars(text)
+    elif lang in LANGSET_SE_ASIAN:
+        # Khmer/Lao/Burmese/Tibetan: no bundled segmenter yet, so wrap per
+        # character. The text still breaks across lines instead of becoming
+        # one unbreakable blob.
         words = seg_to_chars(text)
     else:
         words = seg_eng(text)

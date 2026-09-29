@@ -29,6 +29,9 @@ ordered-set
 opencc-python-reimplemented
 colorama
 spacy-pkuseg
+# Thai word segmentation (no spaces between words); without it Thai wraps
+# per character instead of by word.
+pythainlp
 # Latin-script hyphenation for balloon typesetting; layout falls back to
 # unsplit words when it is absent.
 pyphen

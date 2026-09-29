@@ -103,6 +103,13 @@ Two refinements, both config-gated:
   never mirrored. Only space-delimited scripts that use hyphens (Latin,
   Cyrillic, Greek) are hyphenated — a language that does not hyphenate (CJK,
   Arabic, Thai) is left whole rather than split with borrowed rules.
+- Languages written without spaces between words segment before wrapping:
+  Chinese/Japanese via `seg_ch_pkg` (pkuseg), Thai via `seg_thai_pkg`
+  (pythainlp `newmm`), and Khmer/Lao/Burmese/Tibetan wrap per character
+  (`seg_to_chars`) so they still break across lines instead of becoming one
+  unbreakable blob. Segmentation is per language via
+  `text_processing.seg_text`; Thai's pythainlp import is lazy and falls back
+  to per-character if the library is absent.
 
 Verification: `tests/test_auto_layout_fit.py` (fit, collision, centering,
 shape-aware budget) and `tests/test_text_layout.py` (hyphenation, row-width
