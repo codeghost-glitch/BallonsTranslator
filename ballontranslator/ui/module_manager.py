@@ -1198,7 +1198,7 @@ class ImgtransThread(QThread):
                                         if inpainted is not None:
                                             mskpnt = np.where(blk_mask)
                                             inpainted[y1: y2, x1: x2][mskpnt] = img[y1: y2, x1: x2][mskpnt]
-                                            need_save_mask = True
+                                        need_save_mask = True
                                 if inpainted is not None and need_save_mask:
                                     self.imgtrans_proj.save_inpainted(imgname, inpainted)
                                 if need_save_mask:

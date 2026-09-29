@@ -591,6 +591,12 @@ class Canvas(QGraphicsScene):
     def render_result_img(self) -> QImage:
         self.text_move_session.cancel()
         self.inpaintLayer.hide()
+        # The bubble overlay is an on-screen review guide, never exported
+        # pixels: hiding it here (and restoring in finally) keeps the dashed
+        # outline and its translucent wash out of every result PNG, whether
+        # the reviewer left it shown or hid it.
+        outlines_were_visible = self.bubbleOutlineLayer.isVisible()
+        self.bubbleOutlineLayer.hide()
         editing_opacities = (
             (self.textLayer, self.textLayer.opacity()),
             (self.drawingLayer, self.drawingLayer.opacity()),
@@ -676,6 +682,8 @@ class Canvas(QGraphicsScene):
                     self.vscroll_bar.setValue(vb_pos)
             if not tlayer_visible:
                 self.textLayer.hide()
+            if outlines_were_visible:
+                self.bubbleOutlineLayer.show()
             self.inpaintLayer.show()
             for item, was_visible in control_visibility.items():
                 if item.scene() is self:

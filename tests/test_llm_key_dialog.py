@@ -821,6 +821,10 @@ class LLMKeyDialogDedupTest(unittest.TestCase):
             (8, 8),
             dtype=np.uint8,
         )
+        saved_masks = {}
+        project.save_mask = lambda page, mask: saved_masks.__setitem__(page, mask.copy())
+        project.load_inpainted_by_imgname = lambda _page: None
+        project.save_inpainted = lambda page, _img: None
         thread = module_manager.ImgtransThread(
             SimpleNamespace(textdetector=None),
             FakeOCRThread(PunctuationOCR()),
@@ -842,6 +846,14 @@ class LLMKeyDialogDedupTest(unittest.TestCase):
             pcfg.restore_ocr_empty = old_drop
 
         self.assertEqual(project.pages['page-1'], [dialogue])
+        # The dropped blocks' rectangles must be zeroed in the saved mask and
+        # the file rewritten, or a later whole-page erase pass reads a stale
+        # "erase here" rectangle under artwork that now has no text over it.
+        self.assertIn('page-1', saved_masks, 'drop did not save a cleaned mask')
+        mask = saved_masks['page-1']
+        self.assertEqual(int(mask[0:4, 0:4].sum()), 0, 'dots block region left in mask')
+        self.assertEqual(int(mask[4:8, 0:4].sum()), 0, 'empty block region left in mask')
+        self.assertEqual(int(mask[0:4, 4:8].sum()), 16, 'kept block region was erased')
 
     def test_pipeline_keeps_untranslatable_blocks_when_the_switch_is_off(self):
         class PunctuationOCR(OCRBase):
