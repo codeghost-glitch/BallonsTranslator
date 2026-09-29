@@ -79,7 +79,7 @@ def _containment_ratio(box_a: List, box_b: List) -> float:
     return inter / min(area_a, area_b)
 
 
-def _selected_bubble_instances(candidates: List[dict], threshold: float) -> List[dict]:
+def _selected_bubble_instances(candidates: List[dict], threshold: float, containment: float = 0.6) -> List[dict]:
     """Pick one instance per nested cluster: strong, or weak-but-agreed.
 
     Complex balloons score below the model-card threshold while the head
@@ -98,7 +98,7 @@ def _selected_bubble_instances(candidates: List[dict], threshold: float) -> List
     for i, cand in enumerate(candidates):
         for group in clusters:
             if any(
-                _containment_ratio(cand['box'], candidates[j]['box']) >= 0.6
+                _containment_ratio(cand['box'], candidates[j]['box']) >= containment
                 for j in group
             ):
                 group.append(i)
@@ -113,7 +113,7 @@ def _selected_bubble_instances(candidates: List[dict], threshold: float) -> List
     return selected
 
 
-def _split_two_lobed(outline: List) -> Optional[List[List]]:
+def _split_two_lobed(outline: List, cap: float = 0.79) -> Optional[List[List]]:
     """Cut a joined two-bubble contour at its neck into two closed polygons.
 
     Touching bubbles merge into one detector instance; cutting the contour
@@ -159,8 +159,8 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
     # false slice frees an unbalanced (0.48) or flat (<=0.55) piece. So a
     # balanced roundish cut earns the wide cap; anything else keeps the
     # tight cap that rejects the observed mid-body slices.
-    tight = 0.79 * float(np.sqrt(total))
-    wide = 0.99 * float(np.sqrt(total))
+    tight = cap * float(np.sqrt(total))
+    wide = (cap / 0.79) * 0.99 * float(np.sqrt(total))
     best = None
     for i in range(n - 2):
         if not reflex[i]:
@@ -422,7 +422,7 @@ def _unmasked_ink_fraction(gray: np.ndarray, mask: np.ndarray, box) -> Optional[
     return float((ink & (mask[y0:y1, x0:x1] > 0)).sum()) / total
 
 
-def _drop_contained_detections(items: List[dict]) -> List[dict]:
+def _drop_contained_detections(items: List[dict], containment: float = 0.6) -> List[dict]:
     """Drop the smaller of two boxes when one mostly sits inside the other.
 
     rf-detr fires duplicate detections for a text run crossing a joined
@@ -455,7 +455,7 @@ def _drop_contained_detections(items: List[dict]) -> List[dict]:
         for j in range(i + 1, len(items)):
             if dropped[i] or dropped[j]:
                 continue
-            if _containment_ratio(boxes[i], boxes[j]) < 0.6:
+            if _containment_ratio(boxes[i], boxes[j]) < containment:
                 continue
             bx0, by0, bx1, by1 = boxes[j]
             area_j = (bx1 - bx0) * (by1 - by0)
@@ -636,6 +636,37 @@ class KoharuLayoutDetector(TextDetectorBase):
             # the cost is a wider inpainted band around text (~1.8x mask).
             'type': 'line_editor', 'value': 6, 'display_name': 'Mask Dilate Size',
         },
+        'num select': {
+            # Model-card / constructor knob: how many top candidate boxes
+            # RF-DETR keeps. Lower = fewer candidates to post-process (and
+            # a little less NMS work); higher = more recall on crowded
+            # pages. Takes effect after the model reloads.
+            'type': 'line_editor', 'value': 160, 'display_name': 'Num Select',
+            'description': 'Maximum candidate detections RF-DETR keeps (model card 160). Lower = less post-processing; higher = more recall on dense pages. Needs a model reload.',
+        },
+        'mixed precision': {
+            # Model-card / constructor knob: mixed-precision inference.
+            # Mainly a speed lever on GPU; on CPU it is often not faster and
+            # can be unsupported. Takes effect after the model reloads.
+            'type': 'checkbox', 'value': False, 'display_name': 'Mixed Precision (AMP)',
+            'description': 'Run inference in mixed precision. Mostly speeds up GPU; on CPU it can be slower or unsupported. Needs a model reload.',
+        },
+        'dedup containment': {
+            # Overlap (over the smaller box) at which two detections are
+            # treated as the same run/bubble and collapsed. Higher = more
+            # aggressive collapsing of nested/duplicate detections; lower
+            # keeps more of them. Applied immediately.
+            'type': 'line_editor', 'value': 0.6, 'display_name': 'Duplicate Containment',
+            'description': "Overlap (0-1, over the smaller box) at which two detections collapse as one. Higher = more aggressive. Applied immediately.",
+        },
+        'bubble split cap': {
+            # Chord-width cap (x sqrt(area)) for cutting a joined two-bubble
+            # contour at its neck. Higher = more eager to split (catches more
+            # joined balloons, risks cutting a single bumpy one); lower =
+            # more conservative. Applied immediately.
+            'type': 'line_editor', 'value': 0.79, 'display_name': 'Bubble Split Cap',
+            'description': 'Neck-cut width cap for joined balloons. Higher = more eager to split; lower = more conservative. Applied immediately.',
+        },
         'device': {**DEVICE_SELECTOR(), 'display_name': 'Device'},
     }
 
@@ -672,8 +703,9 @@ class KoharuLayoutDetector(TextDetectorBase):
                 # rfdetr 1.5.2 keeps the position-embedding grid per variant
                 # (64 -> 768 px); the checkpoint was trained at 1152/12 = 96.
                 positional_encoding_size=96,
-                num_select=160,
+                num_select=int(self.get_param_value('num select')),
                 num_classes=len(CLASS_NAMES),
+                amp=bool(self.get_param_value('mixed precision')),
                 device=self.get_param_value('device'),
             )
         incompatible = model.model.model.load_state_dict(load_file(MODEL_PATH, device='cpu'), strict=True)
@@ -699,6 +731,8 @@ class KoharuLayoutDetector(TextDetectorBase):
         }
         want_bubble = 'bubble' in valid_labels
         bubble_threshold = float(self.get_param_value('bubble threshold'))
+        containment = float(self.get_param_value('dedup containment'))
+        split_cap = float(self.get_param_value('bubble split cap'))
         # The pipeline detects pages without switching the viewer's page, so
         # the in-flight page key wins over current_img for per-page writes.
         page = None
@@ -781,7 +815,7 @@ class KoharuLayoutDetector(TextDetectorBase):
                 pts = xywh2xyxypoly(np.array([[x1, y1, x2 - x1, y2 - y1]])).reshape(4, 2).tolist()
                 detected_items.append({'pts': pts, 'label': CLASS_NAMES[cls_id]})
 
-        for cand in _selected_bubble_instances(bubble_candidates, bubble_threshold):
+        for cand in _selected_bubble_instances(bubble_candidates, bubble_threshold, containment):
             x1, y1, x2, y2 = cand['box']
             outline = _mask_outline(cand['mask']) if cand['mask'] is not None else None
             if outline is None:
@@ -796,7 +830,7 @@ class KoharuLayoutDetector(TextDetectorBase):
             # value); collapse nested duplicates so lowering the threshold
             # cannot stack outlines on top of each other.
             deduped = _drop_contained_detections(
-                [{'pts': poly} for poly in bubble_outlines]
+                [{'pts': poly} for poly in bubble_outlines], containment
             )
             # Touching bubbles arrive as one instance; two closed parts read
             # as separate bubbles with a chord between them and give layout
@@ -806,7 +840,7 @@ class KoharuLayoutDetector(TextDetectorBase):
             # split into the same pair.
             bubble_outlines = []
             for item in deduped:
-                split_parts = _split_two_lobed(item['pts'])
+                split_parts = _split_two_lobed(item['pts'], split_cap)
                 if split_parts is not None:
                     bubble_outlines.extend(split_parts)
                     # Chord endpoints plus both parts: a block spanning this
@@ -837,7 +871,7 @@ class KoharuLayoutDetector(TextDetectorBase):
         if not detected_items:
             return mask, blk_list
         # Nested duplicate detections collapse to their largest box.
-        detected_items = _drop_contained_detections(detected_items)
+        detected_items = _drop_contained_detections(detected_items, containment)
         if self.get_param_value('merge text lines'):
             pts_only_list = [item['pts'] for item in detected_items]
             blk_list = mit_merge_textlines(pts_only_list, width=im_w, height=im_h)
@@ -898,7 +932,8 @@ class KoharuLayoutDetector(TextDetectorBase):
 
     def updateParam(self, param_key: str, param_content):
         super().updateParam(param_key, param_content)
-        if param_key == 'device':
-            # RF-DETR records its device at construction, so drop the resident
-            # model and let the next run rebuild it on the new device.
+        if param_key in ('device', 'num select', 'mixed precision'):
+            # RF-DETR records device, num_select and amp at construction, so
+            # drop the resident model and let the next run rebuild it with
+            # the new constructor values.
             self.unload_model()
