@@ -1260,22 +1260,11 @@ class LLMTranslator(LLMChatRequester, BaseTranslator):
                     messages,
                     **request_kwargs,
                 )
-                try:
-                    parsed = parse_translation_response(
-                        raw_response,
-                        len(queries),
-                        array_response=prompt_spec.array_response,
-                    )
-                except Exception:
-                    safe_page_key = str(usage_page_key or '-').replace(
-                        '\r', ' '
-                    ).replace('\n', ' ')
-                    self.logger.debug(
-                        'LLM invalid translation response: '
-                        f'page={safe_page_key}, attempt={provider_attempt}, '
-                        f'chars={len(raw_response)}, content={raw_response!r}'
-                    )
-                    raise
+                parsed = parse_translation_response(
+                    raw_response,
+                    len(queries),
+                    array_response=prompt_spec.array_response,
+                )
                 translations = list(parsed.translations)
                 successful_context = active_context
                 break

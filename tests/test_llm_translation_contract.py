@@ -298,6 +298,26 @@ class LLMTranslationContractTest(unittest.TestCase):
             '{"page_summary":"Scene.","translations":[]}', 0, array_response=True,
         ).page_summary, 'Scene.')
 
+    def test_fenced_array_response_parses(self) -> None:
+        # Models routinely wrap the array response in a ```json fence. The
+        # old fence pattern only captured {...}, so a fenced array fell
+        # through to a brace-slice that yielded "{..},{..}" and failed with
+        # "Extra data: line 4 column 4". Both fenced and bare arrays must
+        # parse.
+        items = '[{"id":1,"translation":"one"},{"id":2,"translation":"two"}]'
+        for raw in (items, f'```json\n{items}\n```', f'```\n{items}\n```',
+                    f'Sure!\n```json\n{items}\n```\nthanks'):
+            with self.subTest(raw=raw):
+                parsed = parse_translation_response(raw, 2, array_response=True)
+                self.assertEqual(parsed.translations, ('one', 'two'))
+
+    def test_fenced_object_response_still_parses(self) -> None:
+        # The object path must keep working alongside the array fix.
+        raw = '```json\n{"page_summary":"Scene.","translations":{"1":"x"}}\n```'
+        parsed = parse_translation_response(raw, 1)
+        self.assertEqual(parsed.translations, ('x',))
+        self.assertEqual(parsed.page_summary, 'Scene.')
+
     def test_parser_normalizes_without_truncating_optional_summary(self) -> None:
         body = ' '.join(['detail'] * 501)
         summary = '  scene\n\tmemory  ' + body

@@ -407,6 +407,45 @@ def translation_json_schema(
     }
 
 
+def _extract_json_payload(raw_content: str) -> str:
+    """Return the JSON object or array in a model response, fence and all.
+
+    Models often wrap JSON in a ```json fence, and the response shape is
+    either an object (summary-aware) or a bare array (array_response). The
+    old fence pattern only ever captured ``{...}``, so a fenced array fell
+    through to a ``find('{')``/``rfind('}')`` slice that kept the inner
+    braces of every element and produced ``{..},{..}`` - invalid JSON that
+    surfaced as "Extra data: line 4 column 4". Match the outer brackets
+    instead, and fall back to the first ``[``/``{`` through its matching
+    close so prose around the payload is discarded.
+
+    >>> _extract_json_payload('```json\\n[{"id": 1}]\\n```')
+    '[{"id": 1}]'
+    >>> _extract_json_payload('noise {"a": 1} trailing')
+    '{"a": 1}'
+    """
+    fenced = re.search(
+        r"```(?:json)?\s*([\[{].*[\]}])\s*```",
+        raw_content,
+        re.DOTALL,
+    )
+    if fenced:
+        return fenced.group(1)
+    start_obj = raw_content.find("{")
+    start_arr = raw_content.find("[")
+    if start_obj == -1 and start_arr == -1:
+        return raw_content
+    if start_arr != -1 and (start_obj == -1 or start_arr < start_obj):
+        start = start_arr
+        end = raw_content.rfind("]")
+    else:
+        start = start_obj
+        end = raw_content.rfind("}")
+    if end == -1 or end <= start:
+        return raw_content
+    return raw_content[start:end + 1]
+
+
 def parse_translation_response(
     raw_content: str,
     expected: int,
@@ -424,19 +463,7 @@ def parse_translation_response(
     >>> (parsed.translations, parsed.page_summary)
     (('x',), 'scene')
     """
-    json_to_parse = raw_content.strip()
-    match = re.search(
-        r"```(?:json)?\s*(\{.*?\})\s*```",
-        json_to_parse,
-        re.DOTALL,
-    )
-    if match:
-        json_to_parse = match.group(1)
-    else:
-        start = json_to_parse.find("{")
-        end = json_to_parse.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            json_to_parse = json_to_parse[start:end + 1]
+    json_to_parse = _extract_json_payload(raw_content.strip())
     data = json.loads(json_to_parse)
     page_summary = ''
     if isinstance(data, dict):
