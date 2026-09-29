@@ -971,6 +971,30 @@ def split_textblk(blk: TextBlock):
             current_blk.adjust_bbox(with_bbox=False)
     return textblock_splitted, sub_blk_list
 
+def _mask_coverage(mask: np.ndarray, bx1, by1, bx2, by2) -> float:
+    """Mean mask coverage over a box, 0.0 for a degenerate or empty slice.
+
+    A detected line can be zero-height or zero-width, and slicing the mask
+    with such a box yields an empty array. Its mean is NaN, so the score
+    comparison silently saw False while numpy emitted "Mean of empty
+    slice" and the following divide emitted "invalid value encountered in
+    scalar divide". A box with no area has no coverage to measure.
+
+    >>> import numpy as np
+    >>> m = np.zeros((10, 10), np.uint8)
+    >>> _mask_coverage(m, 2, 2, 2, 8)
+    0.0
+    >>> _mask_coverage(m, 0, 0, 4, 4)
+    0.0
+    """
+    if bx2 <= bx1 or by2 <= by1:
+        return 0.0
+    region = mask[by1:by2, bx1:bx2]
+    if region.size == 0:
+        return 0.0
+    return float(region.mean()) / 255
+
+
 def group_output(blks, lines, im_w, im_h, mask=None, sort_blklist=True, canvas=None) -> List[TextBlock]:
     blk_list: List[TextBlock] = []
     scattered_lines = {'ver': [], 'hor': []}
@@ -997,7 +1021,7 @@ def group_output(blks, lines, im_w, im_h, mask=None, sort_blklist=True, canvas=N
             blk_list[bbox_idx].adjust_bbox(with_bbox=True)
         else:   # if no textblock was assigned, check whether there is "enough" textmask
             if mask is not None:
-                mask_score = mask[by1: by2, bx1: bx2].mean() / 255
+                mask_score = _mask_coverage(mask, bx1, by1, bx2, by2)
                 if mask_score < mask_score_thresh:
                     continue
             blk = TextBlock([bx1, by1, bx2, by2], [line])
@@ -1015,7 +1039,7 @@ def group_output(blks, lines, im_w, im_h, mask=None, sort_blklist=True, canvas=N
         if len(blk.lines) == 0:
             bx1, by1, bx2, by2 = blk.xyxy
             if mask is not None:
-                mask_score = mask[by1: by2, bx1: bx2].mean() / 255
+                mask_score = _mask_coverage(mask, bx1, by1, bx2, by2)
                 if mask_score < mask_score_thresh:
                     continue
             xywh = np.array([[bx1, by1, bx2-bx1, by2-by1]])

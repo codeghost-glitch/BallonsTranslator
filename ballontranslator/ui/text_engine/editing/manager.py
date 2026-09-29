@@ -1292,10 +1292,6 @@ class SceneTextManager(QObject):
         # the canvas renders, so it must run after the last size change.
         blkitem.squeezeBoundingRect()
         _center_on_balloon()
-        LOGGER.debug(
-            'vertical fit: font=%.2f content_w=%.1f box=%dx%d outline=%s txt=%r',
-            best, best_width, box_w, box_h, poly_arr is not None, text[:36],
-        )
         return True
 
     def layout_textblk(self, blkitem: TextBlkItem, text: str = None, mask: np.ndarray = None, bounding_rect: List = None, region_rect: List = None):
