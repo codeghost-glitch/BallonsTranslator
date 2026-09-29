@@ -17,6 +17,7 @@ from .io_utils import find_all_imgs, imread, imwrite, NumpyEncoder
 from .textblock import (
     FontFormat,
     TextBlock,
+    attribution_points,
     normalize_textblock_effect_payload,
 )
 from .fontformat import warn_ignored_legacy_effects
@@ -927,21 +928,10 @@ class ProjImgTrans:
         outlines = self.get_bubble_outlines(page_key)
         if not outlines:
             return
-        groups: List[np.ndarray] = []
-        for blk in self.pages.get(page_key, []):
-            try:
-                lines = np.asarray(blk.lines, np.float32).reshape(-1, 8)
-            except (ValueError, TypeError):
-                lines = np.empty((0, 8), np.float32)
-            if lines.size:
-                quads = lines.reshape(-1, 4, 2)
-                # Quad corners plus centroid: a line counts for any bubble
-                # it touches.
-                groups.append(np.concatenate(
-                    [quads, quads.mean(axis=1, keepdims=True)], axis=1
-                ).reshape(-1, 2))
-            else:
-                groups.append(np.asarray(blk.center(), np.float32).reshape(1, 2))
+        groups = [
+            attribution_points(blk)
+            for blk in self.pages.get(page_key, [])
+        ]
         points = np.concatenate(groups) if groups else np.empty((0, 2), np.float32)
         kept = []
         for poly in outlines:

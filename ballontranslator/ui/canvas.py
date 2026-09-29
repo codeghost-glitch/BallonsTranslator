@@ -344,10 +344,6 @@ class Canvas(QGraphicsScene):
         self.bubbleOutlineLayer.setBrush(QColor(30, 147, 229, 60))
         # Decorative only: never swallow mouse events meant for the layers below.
         self.bubbleOutlineLayer.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        # View-only toggle for the bubble outline overlay (right-click menu).
-        # Render state, deliberately not saved to shared config: hiding the
-        # overlay is a per-session viewing choice, not a project setting.
-        self._bubble_outlines_hidden = False
         self.textLayer = QGraphicsPixmapItem()
         self.orderBadgeLayer = QGraphicsRectItem()
         self.orderBadgeLayer.setZValue(100.0)
@@ -1621,11 +1617,7 @@ class Canvas(QGraphicsScene):
 
     def toggle_bubble_outlines(self) -> None:
         """Show/hide the detector bubble outline overlay (view-only)."""
-        self._bubble_outlines_hidden = not self._bubble_outlines_hidden
-        self.bubbleOutlineLayer.setVisible(not self._bubble_outlines_hidden)
-
-    def bubble_outlines_visible(self) -> bool:
-        return not self._bubble_outlines_hidden
+        self.bubbleOutlineLayer.setVisible(not self.bubbleOutlineLayer.isVisible())
 
     def updateCanvas(self) -> None:
         self.reset_brush_line()
@@ -1756,7 +1748,7 @@ class Canvas(QGraphicsScene):
             squeeze_act = menu.addAction(self.tr("Squeeze"))
             outlines_act = menu.addAction(
                 self.tr("Hide bubble outlines")
-                if self.bubble_outlines_visible()
+                if self.bubbleOutlineLayer.isVisible()
                 else self.tr("Show bubble outlines")
             )
             menu.addSeparator()

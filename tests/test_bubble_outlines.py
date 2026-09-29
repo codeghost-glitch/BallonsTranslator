@@ -135,11 +135,9 @@ class TestCanvasOutlineLayer(unittest.TestCase):
         proj.current_img = '001.png'
         canvas._refresh_bubble_outlines()
 
-        self.assertTrue(canvas.bubble_outlines_visible())
         self.assertTrue(canvas.bubbleOutlineLayer.isVisible())
 
         canvas.toggle_bubble_outlines()
-        self.assertFalse(canvas.bubble_outlines_visible())
         self.assertFalse(canvas.bubbleOutlineLayer.isVisible())
 
         # A detect run / page switch rebuilds the path but must not resurface
@@ -157,10 +155,10 @@ class TestCanvasOutlineLayer(unittest.TestCase):
         canvas = Canvas()
 
         def label() -> str:
-            return ('Hide bubble outlines' if canvas.bubble_outlines_visible()
+            return ('Hide bubble outlines' if canvas.bubbleOutlineLayer.isVisible()
                     else 'Show bubble outlines')
 
-        self.assertTrue(canvas.bubble_outlines_visible())
+        self.assertTrue(canvas.bubbleOutlineLayer.isVisible())
         self.assertEqual(label(), 'Hide bubble outlines')
         canvas.toggle_bubble_outlines()
         self.assertEqual(label(), 'Show bubble outlines')

@@ -403,12 +403,9 @@ def seg_text(text: str, lang: str) -> Tuple[List, str]:
         words = seg_ch_pkg(text)
     elif lang in LANGSET_THAI:
         words = seg_thai_pkg(text)
-    elif lang in LANGSET_CJK:
-        words = seg_to_chars(text)
-    elif lang in LANGSET_SE_ASIAN:
-        # Khmer/Lao/Burmese/Tibetan: no bundled segmenter yet, so wrap per
-        # character. The text still breaks across lines instead of becoming
-        # one unbreakable blob.
+    elif lang in LANGSET_CJK or lang in LANGSET_SE_ASIAN:
+        # CJK, and the spaceless SE Asian scripts without a bundled
+        # segmenter yet (Khmer/Lao/Burmese/Tibetan), wrap per character.
         words = seg_to_chars(text)
     else:
         words = seg_eng(text)

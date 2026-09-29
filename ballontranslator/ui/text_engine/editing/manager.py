@@ -17,6 +17,7 @@ from ..item import TextBlkItem, TextBlock
 from ...canvas import Canvas
 from .widgets import TransTextEdit, SourceTextEdit, TransPairWidget, TextEditListScrollArea, QVBoxLayout, Widget
 from ballontranslator.utils.fontformat import FontFormat
+from ballontranslator.utils.textblock import attribution_points
 from .commands import (
     ApplyFontformatCommand,
     AutoLayoutCommand,
@@ -427,23 +428,6 @@ def hyphenator_for_target(target: str) -> Optional['pyphen.Pyphen']:
         return None
 
 
-def _attribution_points(blk) -> np.ndarray:
-    """Line quads plus centroids for one block, block center as fallback.
-
-    Shared by bubble attribution and outline ownership counting.
-    """
-    try:
-        lines = np.asarray(blk.lines, np.float32).reshape(-1, 8)
-    except (ValueError, TypeError):
-        lines = np.empty((0, 8), np.float32)
-    if lines.size:
-        quads = lines.reshape(-1, 4, 2)
-        return np.concatenate(
-            [quads, quads.mean(axis=1, keepdims=True)], axis=1
-        ).reshape(-1, 2)
-    return np.asarray(blk.center(), np.float32).reshape(1, 2)
-
-
 def _bubble_polygon_for(outlines, blk) -> Optional[List]:
     """Page polygon of the detected bubble holding this block's text.
 
@@ -452,13 +436,13 @@ def _bubble_polygon_for(outlines, blk) -> Optional[List]:
     ``get_bubble_outlines`` (which deep-copies the page) per call made a
     busy page cost O(blocks^2) full copies and froze the UI.
 
-    Mirrors ProjImgTrans.prune_bubble_outlines attribution: line quads
-    and their centroids first, block center as fallback; deepest
-    containment wins when outlines nest.
+    Attribution is shared with ProjImgTrans.prune_bubble_outlines via
+    textblock.attribution_points; deepest containment wins when outlines
+    nest.
     """
     if not outlines:
         return None
-    pts = _attribution_points(blk)
+    pts = attribution_points(blk)
     best = None
     best_depth = -1.0
     for poly in outlines:

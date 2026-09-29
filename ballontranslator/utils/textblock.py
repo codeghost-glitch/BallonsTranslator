@@ -775,6 +775,25 @@ class TextBlock:
         return True
 
 
+
+def attribution_points(blk: TextBlock) -> np.ndarray:
+    """Line quads plus centroids for one block, block center as fallback.
+
+    Shared by bubble attribution (canvas layout) and outline-ownership
+    counting (proj_imgtrans), so both classify a block's position against a
+    speech balloon the same way.
+    """
+    try:
+        lines = np.asarray(blk.lines, np.float32).reshape(-1, 8)
+    except (ValueError, TypeError):
+        lines = np.empty((0, 8), np.float32)
+    if lines.size:
+        quads = lines.reshape(-1, 4, 2)
+        return np.concatenate(
+            [quads, quads.mean(axis=1, keepdims=True)], axis=1
+        ).reshape(-1, 2)
+    return np.asarray(blk.center(), np.float32).reshape(1, 2)
+
 def sort_regions(regions: List[TextBlock], right_to_left=None) -> List[TextBlock]:
     # from manga image translator
     # Sort regions from right to left, top to bottom
