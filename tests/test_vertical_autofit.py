@@ -24,6 +24,7 @@ class _Stub:
 
     _vertical_fit_balloon_box = SceneTextManager._vertical_fit_balloon_box
     _layout_textblk_vertical = SceneTextManager._layout_textblk_vertical
+    _vertical_column_rects = staticmethod(SceneTextManager._vertical_column_rects)
 
 
 def _make_vertical_item(box, text, font_size=18.0):
@@ -134,3 +135,76 @@ class TestVerticalAutoFit(unittest.TestCase):
         self.assertIn('_layout_textblk_vertical', src)
         # The old blanket "vertical not supported" bail must be gone.
         self.assertNotIn('vertical writing is not supported', src)
+
+
+class TestVerticalOutlineFit(unittest.TestCase):
+    """The detector outline is a real ceiling: it must cap a block below the
+    size its rectangular detection box alone would allow."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.old_auto = pcfg.let_autolayout_flag
+        pcfg.let_autolayout_flag = True
+        pcfg.let_fntsize_flag = 0
+
+    def tearDown(self) -> None:
+        pcfg.let_autolayout_flag = self.old_auto
+
+    @staticmethod
+    def _stub_with_outline(outline):
+        stub = _Stub()
+        stub.imgtrans_proj = type('P', (), {})()
+        stub.imgtrans_proj.current_img = 'p'
+        stub.imgtrans_proj.get_bubble_outlines = lambda pg: [outline]
+        return stub
+
+    def test_column_rects_cover_each_column(self) -> None:
+        # Every glyph cell belongs to a column strip; the builder must return
+        # one rect per column, each with positive width and height.
+        item = _make_vertical_item([0, 0, 165, 266], CJK_TEXT)
+        rects = SceneTextManager._vertical_column_rects(item)
+        self.assertGreaterEqual(len(rects), 1)
+        for x, y, w, h in rects:
+            self.assertGreater(w, 0)
+            self.assertGreater(h, 0)
+        # Columns run right to left: x offsets are ordered but descending.
+        # The builder sorts ascending; just assert uniqueness of x.
+        xs = [r[0] for r in rects]
+        self.assertEqual(len(set(xs)), len(xs))
+
+    def test_outline_gate_scales_with_outline(self) -> None:
+        # Anchor the item at the origin so its scene position equals its page
+        # position and the per-column pointPolygonTest gate sees the real
+        # geometry. A balloon outline that hugs the text (an ellipse matching
+        # the block's aspect) must not reject a fit the box alone accepts,
+        # while a much tighter outline must cap it harder.
+        import numpy as np
+        box = [0, 0, 165, 266]
+        cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
+
+        def fit(scale):
+            if scale is None:
+                stub = _Stub()
+            else:
+                rx = (box[2] / 2) * scale
+                ry = (box[3] / 2) * scale
+                ellipse = [(cx + rx * np.cos(a), cy + ry * np.sin(a))
+                           for a in np.linspace(0, 2 * np.pi, 65)[:-1]]
+                stub = self._stub_with_outline(ellipse)
+            item = _make_vertical_item(box, CJK_TEXT)
+            stub._layout_textblk_vertical(item, CJK_TEXT, bounding_rect=list(box))
+            return item.layout._column_content_width()
+
+        none_w = fit(None)
+        roomy_w = fit(1.05)   # balloon comfortably contains the columns
+        tight_w = fit(0.55)   # balloon much smaller than the text
+        # An ellipse can never contain a box's corners, so a real balloon
+        # always caps the fit below the box-only result, and a tighter
+        # balloon caps it further. This is the gate doing its job: the top of
+        # the leftmost column sits outside a round balloon, so the font
+        # shrinks until every column fits.
+        self.assertLessEqual(roomy_w, none_w + 1e-6)
+        self.assertLess(tight_w, roomy_w)

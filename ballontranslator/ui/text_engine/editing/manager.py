@@ -1053,6 +1053,42 @@ class SceneTextManager(QObject):
             return float(db[2]), float(db[3])
         return None
 
+    @staticmethod
+    def _vertical_column_rects(blkitem: TextBlkItem) -> List[Tuple[float, float, float, float]]:
+        """Settled vertical columns as (x, y, width, height) item-local rects.
+
+        A vertical QTextLine is one glyph cell: ``x`` is its column's x and
+        ``y``/``height`` its vertical extent. Lines sharing an x belong to one
+        column, so group by x and take each column's tallest extent. Column
+        width is the x-spacing between adjacent columns (line.width() is an
+        unset sentinel in the vertical layout, so it cannot be used).
+        """
+        doc = blkitem.document()
+        columns: dict = {}
+        block = doc.firstBlock()
+        while block.isValid():
+            tl = block.layout()
+            for n in range(tl.lineCount()):
+                line = tl.lineAt(n)
+                x = round(line.x(), 2)
+                y, h = line.y(), line.height()
+                cur = columns.get(x)
+                if cur is None:
+                    columns[x] = [y, y + h]
+                else:
+                    cur[0] = min(cur[0], y)
+                    cur[1] = max(cur[1], y + h)
+            block = block.next()
+        if not columns:
+            return []
+        xs = sorted(columns)  # left to right
+        widths = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+        col_w = (sum(widths) / len(widths)) if widths else 0.0
+        if col_w <= 0:
+            return []
+        return [(x, columns[x][0], col_w, columns[x][1] - columns[x][0])
+                for x in xs]
+
     def _layout_textblk_vertical(
         self,
         blkitem: TextBlkItem,
@@ -1067,8 +1103,17 @@ class SceneTextManager(QObject):
         leftward when the column reaches ``available_height``, so the settled
         content's horizontal extent - the width spanned by all its columns -
         grows with the font exactly as the horizontal canvas grows with line
-        count. That extent is the fit signal: probe a candidate size, keep the
-        largest whose column block still fits the balloon, and center it.
+        count. That extent is the first fit signal: probe a candidate size,
+        keep the largest whose column block still fits the balloon, and center
+        it.
+
+        When the project carries a detector outline for the balloon, each
+        settled column is also probed against it (corners plus edge midpoints,
+        after centring, so the geometry tested is the geometry rendered) -
+        the vertical analogue of the horizontal per-line pointPolygonTest
+        check. A round balloon's curved edge rejects the top of a leftmost
+        column that the rectangular detection box would have allowed, so the
+        fit hugs the real shape instead of the box.
 
         Unlike the horizontal loop there is no shrink pass: an oversized font
         makes the layout auto-enlarge its own box (VerticalTextDocumentLayout
@@ -1101,45 +1146,122 @@ class SceneTextManager(QObject):
         if box_w < 1 or box_h < 1:
             return False
 
+        # Page centre of the balloon box, needed by both the per-candidate
+        # collision probe and the final centring, so compute it once up front.
+        if mask is not None and getattr(mask, 'size', 0):
+            _ys, _xs = np.nonzero(mask)
+        else:
+            _ys = _xs = None
+        if _ys is not None and _ys.size:
+            cx, cy = float(_xs.min() + _xs.max()) / 2, float(_ys.min() + _ys.max()) / 2
+        else:
+            rect = bounding_rect or region_rect
+            if rect is not None and len(rect) >= 4:
+                cx, cy = rect[0] + rect[2] / 2, rect[1] + rect[3] / 2
+            else:
+                db = getattr(blkitem.blk, '_detected_bbox', None)
+                if db is None or len(db) < 4:
+                    return False
+                cx, cy = db[0] + db[2] / 2, db[1] + db[3] / 2
+
+        # Detector outline, when the project has one for this balloon, so the
+        # fit hugs a round bubble instead of its rectangular detection box.
+        poly_arr = None
+        if getattr(self, 'imgtrans_proj', None) is not None:
+            try:
+                outlines = self.imgtrans_proj.get_bubble_outlines(
+                    self.imgtrans_proj.current_img)
+                bubble = _bubble_polygon_for(outlines, blkitem.blk)
+                if bubble is not None:
+                    poly_arr = np.asarray(bubble, np.float32)
+            except Exception:
+                poly_arr = None
+
         font = blkitem.font()
         start = font.pointSizeF()
         if start <= 0:
             return False
         min_size = max(start * 0.15, 1.0)
 
-        def settled_content_width(size: float) -> float:
-            """Lay the block out at ``size`` inside the balloon and measure
-            the settled horizontal extent of its columns."""
+        def _center_on_balloon() -> None:
+            """Move the settled item so its box centre sits on the balloon."""
+            for _ in range(3):
+                br = blkitem.absBoundingRect(qrect=True)
+                dx = cx - (br.x() + br.width() / 2)
+                dy = cy - (br.y() + br.height() / 2)
+                if abs(dx) <= 1 and abs(dy) <= 1:
+                    break
+                blkitem.moveBy(dx, dy)
+
+        def _columns_inside_outline() -> bool:
+            """Probe every settled column against the detector outline.
+
+            Mirrors the horizontal per-line pointPolygonTest probe: a column
+            is a tall narrow strip, and a bounding box around the whole block
+            would flag the top/bottom of a round bubble as overflow. Probe the
+            column's own rect (corners plus edge midpoints) after centring, so
+            the geometry tested is the geometry rendered.
+            """
+            if poly_arr is None:
+                return True
+            rects = self._vertical_column_rects(blkitem)
+            if not rects:
+                return True
+            _center_on_balloon()
+            origin = blkitem.mapToParent(QPointF(0, 0))
+            ox, oy = origin.x(), origin.y()
+            for x, y, w, h in rects:
+                ix0, iy0 = x + ox + 1, y + oy + 1
+                ix1 = x + ox + max(w - 1, 1)
+                iy1 = y + oy + max(h - 1, 1)
+                for qx, qy in (
+                    (ix0, iy0), (ix1, iy0), (ix0, iy1), (ix1, iy1),
+                    ((ix0 + ix1) / 2, iy0), ((ix0 + ix1) / 2, iy1),
+                    (ix0, (iy0 + iy1) / 2), (ix1, (iy0 + iy1) / 2),
+                ):
+                    if cv2.pointPolygonTest(poly_arr, (float(qx), float(qy)), False) < 0:
+                        return False
+            return True
+
+        def try_size(size: float):
+            """Settle at ``size``; return the content width if it fits, else None."""
             blkitem.setFontSize(size)
             blkitem.set_size(
                 box_w, box_h, set_layout_maxsize=True, set_blk_size=False,
             )
-            return float(blkitem.layout._column_content_width())
+            width = float(blkitem.layout._column_content_width())
+            if width > box_w:
+                return None
+            if not _columns_inside_outline():
+                return None
+            return width
 
         # Step up while the columns still fit, remembering the last size that
         # did. A 1.12 geometric step over ~14 probes spans the useful range
         # from a near-floor size to several times the default without the
         # binary search's oscillation between two neighbouring sizes.
         best = start
-        best_width = settled_content_width(start)
-        if best_width > box_w:
-            # Already too wide at the stored size: fall back to shrinking
-            # rather than growing, so an over-large saved font converges.
+        best_width = try_size(start)
+        if best_width is None:
+            # Already too wide (or outside the outline) at the stored size:
+            # fall back to shrinking rather than growing, so an over-large
+            # saved font converges.
             size = start
+            best_width = 0.0
             while size > min_size:
                 size = max(min_size, size * 0.85)
-                width = settled_content_width(size)
-                if width <= box_w:
+                width = try_size(size)
+                if width is not None:
                     best, best_width = size, width
                     break
             else:
-                best, best_width = min_size, settled_content_width(min_size)
+                best = min_size
         else:
             size = start
             for _ in range(14):
                 candidate = size * 1.12
-                width = settled_content_width(candidate)
-                if width > box_w:
+                width = try_size(candidate)
+                if width is None:
                     break
                 size, best, best_width = candidate, candidate, width
 
@@ -1152,39 +1274,14 @@ class SceneTextManager(QObject):
         # the fitted size, exactly as the horizontal path does after its
         # setPlainText.
         blkitem.document().setDefaultFont(blkitem.font())
-
-        # Center the settled text box on the balloon itself, mirroring the
-        # horizontal path's re-measure-and-move loop: the first moveBy
-        # re-anchors the rect through the geometry controller.
-        if mask is not None and getattr(mask, 'size', 0):
-            ys, xs = np.nonzero(mask)
-        else:
-            ys = xs = None
-        if ys is not None and ys.size:
-            cx, cy = float(xs.min() + xs.max()) / 2, float(ys.min() + ys.max()) / 2
-        else:
-            rect = bounding_rect or region_rect
-            if rect is not None and len(rect) >= 4:
-                cx, cy = rect[0] + rect[2] / 2, rect[1] + rect[3] / 2
-            else:
-                db = getattr(blkitem.blk, '_detected_bbox', None)
-                if db is None or len(db) < 4:
-                    return False
-                cx, cy = db[0] + db[2] / 2, db[1] + db[3] / 2
         # Squeeze the box to the settled content first, then center it, the
         # same order the horizontal path uses: centering measures the rect
         # the canvas renders, so it must run after the last size change.
         blkitem.squeezeBoundingRect()
-        for _ in range(3):
-            br = blkitem.absBoundingRect(qrect=True)
-            dx = cx - (br.x() + br.width() / 2)
-            dy = cy - (br.y() + br.height() / 2)
-            if abs(dx) <= 1 and abs(dy) <= 1:
-                break
-            blkitem.moveBy(dx, dy)
+        _center_on_balloon()
         LOGGER.debug(
-            'vertical fit: font=%.2f content_w=%.1f box=%dx%d txt=%r',
-            best, best_width, box_w, box_h, text[:36],
+            'vertical fit: font=%.2f content_w=%.1f box=%dx%d outline=%s txt=%r',
+            best, best_width, box_w, box_h, poly_arr is not None, text[:36],
         )
         return True
 
