@@ -132,6 +132,39 @@ def test_split_two_lobed_separates_joined_bubbles():
     assert _split_two_lobed(a.reshape(-1, 2).tolist()) is None
 
 
+# The peanut outline stored for 008.webp of a real chapter: two large,
+# near-equal, roundish lobes joined by a wide neck. Its neck chord measures
+# 0.845*sqrt(area) - above the flat 0.79 cap that used to reject it - but
+# balance 0.83 and compactness 0.72 mark it as a true neck, not a mid-body
+# slice. With the cap the outline stayed whole, so both text blocks shared
+# it and neither centered in its own lobe, and no neck line was drawn.
+_WIDE_NECK_PEANUT = [
+    [1085, 17], [1054, 16], [1044, 19], [1015, 37], [999, 54], [983, 85],
+    [978, 89], [946, 80], [928, 80], [905, 89], [873, 120], [843, 173],
+    [829, 234], [831, 279], [842, 317], [855, 346], [882, 382], [910, 405],
+    [931, 414], [957, 418], [986, 410], [998, 403], [1020, 381], [1041, 339],
+    [1058, 346], [1074, 346], [1103, 334], [1131, 308], [1153, 269],
+    [1160, 241], [1164, 202], [1163, 168], [1157, 132], [1141, 81],
+    [1128, 55], [1109, 32],
+]
+
+
+def test_wide_neck_peanut_splits_into_two_lobes():
+    from custom_modules.detector_koharu_layout import _split_two_lobed
+
+    parts = _split_two_lobed(_WIDE_NECK_PEANUT)
+    assert parts is not None and len(parts) == 2
+    areas = [abs(cv2.contourArea(np.asarray(p, np.float32))) for p in parts]
+    # two comparable lobes: the chord separates, it does not lop off a cap
+    assert min(areas) / max(areas) >= 0.6
+    # the cut is a partition: summed lobe areas match the joined outline
+    total = abs(cv2.contourArea(np.asarray(_WIDE_NECK_PEANUT, np.float32)))
+    assert abs(sum(areas) - total) < total * 0.05
+    # each part sits over its own lobe, not the union center
+    xs = sorted(int(np.asarray(p)[:, 0].mean()) for p in parts)
+    assert xs[0] < 1000 < xs[1]
+
+
 def test_weak_bubble_kept_only_when_head_stacks_it():
     from custom_modules.detector_koharu_layout import (
         _selected_bubble_instances,

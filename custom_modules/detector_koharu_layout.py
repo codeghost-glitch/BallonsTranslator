@@ -151,12 +151,16 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
         a, b, c = pts[k - 1], pts[k], pts[(k + 1) % n]
         cross = float((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]))
         reflex.append(cross * orient < 0)
-    # Neck chords over stored true pairs measure at most 0.773*sqrt(area)
-    # (the diamond pair); every observed false cut sits above 0.788 - a
-    # cloud balloon cut mid-body 0.795, a round balloon 0.820. The cap
-    # lives in that gap. Rejection is the safe side: a missed split keeps
-    # one outline, a false one cuts a block.
-    limit = 0.79 * float(np.sqrt(total))
+    # Chord cap relative to the joined outline's size. The cap alone cannot
+    # tell a neck from a mid-body slice: true necks over the stored set
+    # measure up to 0.97*sqrt(area), and so do slices through a single
+    # balloon. Balance and compactness separate them - true necks free two
+    # comparable roundish lobes (balance 0.67-0.99, compact 0.6-0.97), a
+    # false slice frees an unbalanced (0.48) or flat (<=0.55) piece. So a
+    # balanced roundish cut earns the wide cap; anything else keeps the
+    # tight cap that rejects the observed mid-body slices.
+    tight = 0.79 * float(np.sqrt(total))
+    wide = 0.99 * float(np.sqrt(total))
     best = None
     for i in range(n - 2):
         if not reflex[i]:
@@ -166,7 +170,7 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
                 continue
             a, b = pts[i], pts[j]
             chord = float(np.hypot(b[0] - a[0], b[1] - a[1]))
-            if chord > limit:
+            if chord > wide:
                 continue
             if cv2.pointPolygonTest(pts, (float((a[0] + b[0]) / 2), float((a[1] + b[1]) / 2)), False) < 0:
                 continue
@@ -195,6 +199,9 @@ def _split_two_lobed(outline: List) -> Optional[List[List]]:
             # false cuts 1.43+. Deterministic geometry keeps true cuts at
             # their measured value across runs.
             if chord > 1.4 * float(np.sqrt(min(area1, area2))):
+                continue
+            balance = min(area1, area2) / max(area1, area2)
+            if chord > (wide if (balance >= 0.6 and compact >= 0.6) else tight):
                 continue
             # Prefer the cut freeing the roundest lobe: a true neck frees a
             # blob (0.4-0.9), noise dents free flatter pieces, and ranking by
