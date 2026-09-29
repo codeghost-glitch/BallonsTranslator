@@ -597,6 +597,16 @@ class KoharuLayoutDetector(TextDetectorBase):
         }
     ]
 
+    # Detection defaults follow the trainer's inference_config.json and
+    # load_model.py (mayocream/koharu-layout-rfdetr-seg-2xl-1152):
+    #   num_select 160; thresholds text 0.25, onomatopoeia 0.20, bubble 0.50;
+    #   amp left at the library default (on); resolution 1152 (tied to the
+    #   checkpoint, so it is not editable here).
+    # The trainer validated with rfdetr 1.7.0; this module pins 1.5.2 because
+    # the app's OCR/translator modules require transformers 4.x. The post-
+    # processing knobs below (mask dilate, dedup, split cap, font sizes) are
+    # app-side tuning - the trainer publishes no defaults for them.
+
     params = {
         'text threshold': {
             'type': 'line_editor', 'value': 0.25, 'display_name': 'Text Threshold',
@@ -645,11 +655,12 @@ class KoharuLayoutDetector(TextDetectorBase):
             'description': 'Maximum candidate detections RF-DETR keeps (model card 160). Lower = less post-processing; higher = more recall on dense pages. Needs a model reload.',
         },
         'mixed precision': {
-            # Model-card / constructor knob: mixed-precision inference.
-            # Mainly a speed lever on GPU; on CPU it is often not faster and
-            # can be unsupported. Takes effect after the model reloads.
-            'type': 'checkbox', 'value': False, 'display_name': 'Mixed Precision (AMP)',
-            'description': 'Run inference in mixed precision. Mostly speeds up GPU; on CPU it can be slower or unsupported. Needs a model reload.',
+            # The trainer's load_model.py does not pass amp, so the shipped
+            # inference runs at the library default (amp on). Match that
+            # default. Mostly a speed lever on GPU; on CPU it can be slower.
+            # Takes effect after the model reloads.
+            'type': 'checkbox', 'value': True, 'display_name': 'Mixed Precision (AMP)',
+            'description': 'Run inference in mixed precision (the trainer default; mostly speeds up GPU, on CPU it can be slower). Needs a model reload.',
         },
         'dedup containment': {
             # Overlap (over the smaller box) at which two detections are
