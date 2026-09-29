@@ -91,6 +91,11 @@ class ColoredLogger(logging.Logger):
 
         console = logging.StreamHandler()
         console.setFormatter(color_formatter)
+        # The console handler inherits the logger's DEBUG level, so every
+        # debug line - including whole LLM responses - printed to the
+        # terminal and buried anything useful. The file handler is already
+        # DEBUG, so keep the full detail there and show INFO+ on screen.
+        console.setLevel(logging.INFO)
 
         self.addHandler(console)
         return
