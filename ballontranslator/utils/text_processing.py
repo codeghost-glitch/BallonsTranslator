@@ -356,3 +356,29 @@ def seg_text(text: str, lang: str) -> Tuple[List, str]:
 
 def is_cjk(lang: str) -> bool:
     return lang in LANGSET_CJK
+
+# Right-to-left scripts, keyed by the English display names the translator
+# modules actually store in pcfg.module.translate_target (the target
+# dropdown lists languages by these names, e.g. 'Arabic', not native
+# names). Covers every RTL language a bundled translator offers plus the
+# native-script spellings a custom module might set. Qt auto-detects bidi
+# for glyph shaping; the app still has to mirror the alignment it derives
+# from an LTR source.
+LANGSET_RTL = {
+    'Arabic', 'Arabic (Saudi Arabia)', 'Arabic (Egypt)', 'Arabic (UAE)',
+    'Hebrew', 'Persian', 'Farsi', 'Dari', 'Urdu', 'Pashto', 'Kurdish',
+    'Kurdish (Central)', 'Yiddish', 'Amharic', 'Divehi', 'Uyghur',
+    'العربية', 'فارسی', 'دری', 'اردو', 'پښتو', 'کوردی', 'עברית',
+    'አማርኛ', 'ދިވެހި', 'ئۇيغۇرچە', 'ייִדיש',
+}
+
+
+def is_rtl(lang: str) -> bool:
+    """True when the app display name denotes a right-to-left script.
+
+    >>> is_rtl('Arabic')
+    True
+    >>> is_rtl('English')
+    False
+    """
+    return lang in LANGSET_RTL

@@ -12,7 +12,7 @@ from qtpy.QtCore import Qt, QPoint, QSize, QEvent, Signal, QTimer
 from qtpy.QtGui import QContextMenuEvent, QTextCursor, QGuiApplication, QIcon, QCloseEvent, QKeySequence, QPainter, QClipboard, QColor
 
 from ballontranslator.utils.logger import logger as LOGGER
-from ballontranslator.utils.text_processing import is_cjk
+from ballontranslator.utils.text_processing import is_cjk, is_rtl
 from ballontranslator.utils.imgproc_utils import light_text_on_dark
 from ballontranslator.utils.textblock import TextBlock, TextAlignment
 from ballontranslator.utils.text_effects import (
@@ -2041,6 +2041,12 @@ class MainWindow(mainwindow_cls):
                             blk.alignment = TextAlignment.Center
                         elif not blk.src_is_vertical:
                             blk.recalulate_alignment()
+                            # The derived alignment comes from the (usually
+                            # left-to-right) source geometry; an RTL target
+                            # must hug the mirrored edge. An explicit override
+                            # above is the user's choice and is left alone.
+                            if is_rtl(pcfg.module.translate_target):
+                                blk.mirror_alignment_for_rtl()
                     if override_effect:
                         blk.fontformat.text_effects = with_non_stroke_effects(
                             blk.fontformat.text_effects,

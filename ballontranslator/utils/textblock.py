@@ -708,6 +708,30 @@ class TextBlock:
         else:
             self.alignment = TextAlignment.Center
 
+    def mirror_alignment_for_rtl(self) -> None:
+        """Mirror an auto-derived alignment for a right-to-left target.
+
+        The alignment is derived from the (usually left-to-right) source
+        geometry, so a translation into an RTL script that keeps it would
+        hug the wrong balloon edge. Center is direction-neutral and kept.
+        An explicit user override is never mirrored - only the auto-derived
+        path calls this.
+
+        >>> b = TextBlock([0, 0, 10, 10])
+        >>> b.alignment = TextAlignment.Left
+        >>> b.mirror_alignment_for_rtl()
+        >>> b.alignment is TextAlignment.Right
+        True
+        >>> b.alignment = TextAlignment.Center
+        >>> b.mirror_alignment_for_rtl()
+        >>> b.alignment is TextAlignment.Center
+        True
+        """
+        if self.fontformat.alignment == TextAlignment.Left:
+            self.alignment = TextAlignment.Right
+        elif self.fontformat.alignment == TextAlignment.Right:
+            self.alignment = TextAlignment.Left
+
     def recalulate_stroke_width(self, color_diff_tol = 15, stroke_width: float = 0.2):
         stack = self.fontformat.text_effects
         if color_difference(*self.get_font_colors()) < color_diff_tol:

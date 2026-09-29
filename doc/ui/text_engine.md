@@ -94,6 +94,15 @@ Two refinements, both config-gated:
   points once the font settles (`text_layout.hyphenate_long_words`; pyphen is
   optional — without it tokens pass through unchanged). CJK targets wrap per
   character and are never hyphenated.
+- Right-to-left targets (Arabic, Hebrew, Persian, Urdu, Yiddish, …) are
+  recognized by `text_processing.is_rtl`. Qt auto-detects bidi for glyph
+  shaping, so the app's job is to mirror the alignment it would otherwise
+  derive from the left-to-right source geometry
+  (`TextBlock.mirror_alignment_for_rtl`, applied on the auto-derived path in
+  `MainWindow.on_pagtrans_finished`). An explicit user alignment override is
+  never mirrored. Only space-delimited scripts that use hyphens (Latin,
+  Cyrillic, Greek) are hyphenated — a language that does not hyphenate (CJK,
+  Arabic, Thai) is left whole rather than split with borrowed rules.
 
 Verification: `tests/test_auto_layout_fit.py` (fit, collision, centering,
 shape-aware budget) and `tests/test_text_layout.py` (hyphenation, row-width
