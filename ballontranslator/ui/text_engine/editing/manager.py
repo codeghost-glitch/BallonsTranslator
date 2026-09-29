@@ -1,6 +1,6 @@
 
 from enum import Enum
-from typing import List, Optional, Sequence, Union, Tuple
+from typing import List, NamedTuple, Optional, Sequence, Union, Tuple
 import numpy as np
 import cv2
 import copy
@@ -516,6 +516,28 @@ def _shared_outline_window(window: List, blk, siblings: List) -> List:
         elif oy1 >= by2:
             y2 = min(y2, (oy1 + by2) // 2)
     return [x1, y1, x2, y2]
+
+
+class _FitAt(NamedTuple):
+    """One laid-out candidate of the horizontal fit loop.
+
+    ``text``/``xywh`` are what a pass would commit; the rest is the geometry
+    the fit decisions are made from, window-relative for the inside test and
+    mask-bbox-relative for the shrink step. ``accepted`` says the whole canvas
+    sits inside the balloon with its lines clear of the outline (or at least
+    90% of it on the mask when the detector gave no outline).
+    """
+    text: str
+    xywh: List
+    x: int
+    y: int
+    w: int
+    h: int
+    lx: int
+    ly: int
+    inside: bool
+    frac: float
+    accepted: bool
 
 
 class SceneTextManager(QObject):
@@ -1508,12 +1530,10 @@ class SceneTextManager(QObject):
                 resize_ratio = min(max(resize_ratio, 0.6), 1)
 
         if resize_ratio != 1:
-            new_font_size = blk_font.pointSizeF() * resize_ratio
-            blk_font.setPointSizeF(new_font_size)
-            wl_list = (np.array(wl_list, np.float64) * resize_ratio).astype(np.int32).tolist()
-            line_height = int(line_height * resize_ratio)
-            text_w = int(text_w * resize_ratio)
-            delimiter_len = int(delimiter_len * resize_ratio)
+            # Only the font moves: the widths the fit works from are measured
+            # at whatever size it is asked about (see layout_at), so nothing
+            # here has to be rescaled to match.
+            blk_font.setPointSizeF(blk_font.pointSizeF() * resize_ratio)
 
         # Optical line-end hyphenation for Latin scripts: the wrap loops
         # close a line with a word's hyphen-fitting head when the whole
@@ -1609,28 +1629,46 @@ class SceneTextManager(QObject):
 
         offset_retries = 0
         prev_frac = -1.0
-        grew = False
-        good_text, good_xywh, good_font, good_ratio = None, None, 0.0, 1.0
+        # The size the loop is working at. blk_font follows it (layout_at
+        # sets the font it is asked for), but the loop scales a number, not
+        # a QFont, so the two are kept apart on purpose.
+        font_size = blk_font.pointSizeF()
         # Coverage is measured on a hole-closed mask: the source image still
         # carries the original glyphs the flood fill leaves out, and counting
         # them as off-mask makes an in-balloon text look under-covered.
         k = max(5, int(np.sqrt(max(int((mask > 0).sum()), 1)) / 12))
         measure_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8)) if check_fit else mask
-        # Hyphen candidates are advisory, so the pristine lists stay here:
-        # each attempt rebuilds from them instead of inheriting a split that
-        # an earlier, larger font asked for.
-        base_words = list(words)
-        clean_wl = list(wl_list)
 
-        for _ in range(13 if check_fit else 1):
+        def layout_at(size: float) -> _FitAt:
+            """Lay the text out at one font size and judge whether it fits.
+
+            The whole attempt set for that size, because the accept test is
+            not a property of the font alone: it depends on which of the
+            hyphenation attempts was laid out. Anything that wants to try
+            another size (the shrink step, the grow climb) has to ask here,
+            or it grades a size by rules the loop does not apply.
+            """
+            blk_font.setPointSizeF(size)
+            # Every width the wrap works from is measured at this size, never
+            # scaled up from the size the search started at: each step's int
+            # truncation left a pixel here and there, so the same font size
+            # wrapped differently depending on the path that reached it, and
+            # two runs of the pipeline graded one size as fitting and as not.
+            # Measuring instead makes the layout a function of the size
+            # alone, which is what lets the fit converge on one answer - and
+            # it stops the line pitch from shrinking a percent per step,
+            # which let seven lines hang below the balloon.
+            fm = QFontMetricsF(blk_font)
+            wl = get_words_length_list(fm, words)
+            lh = int(round(fmt.line_spacing * text_size_func('X木' if tgt_is_cjk else 'X')[1]))
+            dl = text_size_func(delimiter)[0]
             # Hyphenation is advisory: candidates are derived from the
             # pristine word list for the attempt that needs them, and the
             # unhyphenated layout always runs first at each size. A split
             # accepted early outlives the font that justified it and pins
             # later, smaller attempts to lines the text no longer needs.
-            words = list(base_words)
-            wl_list = list(clean_wl)
-            attempts = [(words, wl_list)]
+            # Fresh word lists per attempt, because layout_lines pops from them.
+            attempts = [(list(words), list(wl))]
             # Gate on the same validated signal the line-breaker uses
             # (hyphenator is not None only for a target that is in
             # PYPHEN_LANGS *and* has real pyphen break rules), so a
@@ -1640,7 +1678,7 @@ class SceneTextManager(QObject):
             # script or a spaceless sentence at arbitrary characters; CJK is
             # already excluded upstream. With this gate the target is
             # guaranteed to be in the table, so the lookup always resolves.
-            if check_fit and hyphenator is not None and base_words:
+            if check_fit and hyphenator is not None and words:
                 # pyphen wants a language code; translate_target is a
                 # display name, and language_fallback('English') returns
                 # None, which the helper's own guard turns into a silent
@@ -1648,7 +1686,7 @@ class SceneTextManager(QObject):
                 # bounding box, so a word measured here cannot pass the
                 # gate and still overrun its line.
                 hy_words, hy_wl = hyphenate_long_words(
-                    base_words, clean_wl, lambda s: text_size_func(s)[0],
+                    words, wl, hyphen_measure,
                     # hyphenator is not None => the target is in the table,
                     # so this always yields a real pyphen code (never the
                     # 'en' that would mis-split a non-hyphenating script).
@@ -1660,10 +1698,12 @@ class SceneTextManager(QObject):
                     # words still wrap at the narrower column.
                     float(widest) if widest > 0 else float(mask.shape[1]),
                 )
-                if hy_words != base_words:
+                if hy_words != words:
                     attempts.append((hy_words, hy_wl))
 
-            accepted = False
+            x = y = w = h = lx = ly = 0
+            inside, frac, accepted = False, -1.0, False
+            base_state = None
             for attempt_index, (attempt_words, attempt_wl) in enumerate(attempts):
                 new_text, xywh, start_from_top, adjust_xy = layout_text(
                     blkitem.blk,
@@ -1673,8 +1713,8 @@ class SceneTextManager(QObject):
                     list(attempt_words),
                     list(attempt_wl),
                     delimiter,
-                    delimiter_len,
-                    line_height,
+                    dl,
+                    lh,
                     0,
                     max_central_width,
                     src_is_cjk=src_is_cjk,
@@ -1705,17 +1745,17 @@ class SceneTextManager(QObject):
                     line_wl = [text_size_func(t)[0] for t in line_texts]
                     if fmt.alignment == 1:
                         line_rects = [
-                            (x + (w - lw) // 2, y + i * line_height, lw, line_height)
+                            (x + (w - lw) // 2, y + i * lh, lw, lh)
                             for i, lw in enumerate(line_wl)
                         ]
                     elif fmt.alignment == 2:
                         line_rects = [
-                            (x + w - lw, y + i * line_height, lw, line_height)
+                            (x + w - lw, y + i * lh, lw, lh)
                             for i, lw in enumerate(line_wl)
                         ]
                     else:
                         line_rects = [
-                            (x, y + i * line_height, lw, line_height)
+                            (x, y + i * lh, lw, lh)
                             for i, lw in enumerate(line_wl)
                         ]
                     clear = True
@@ -1739,20 +1779,25 @@ class SceneTextManager(QObject):
                 else:
                     accepted = inside and frac >= 0.9
                 if attempt_index == 0:
-                    base_state = (new_text, xywh, x, y, w, h, lx, ly, inside, frac)
+                    base_state = _FitAt(new_text, xywh, x, y, w, h, lx, ly, inside, frac, False)
                 if accepted:
                     break
 
-            if not check_fit:
-                break
-
-            if not accepted:
+            if not accepted and base_state is not None:
                 # Nobody accepted, so fall back to the unhyphenated geometry
                 # before measuring the shrink. A rejected split attempt is
                 # taller - hyphenation trades width for lines - and letting
                 # its height drive the step shrinks the font as if those
                 # extra lines had been chosen.
-                (new_text, xywh, x, y, w, h, lx, ly, inside, frac) = base_state
+                return base_state
+            return _FitAt(new_text, xywh, x, y, w, h, lx, ly, inside, frac, accepted)
+
+        for _ in range(13 if check_fit else 1):
+            (new_text, xywh, x, y, w, h, lx, ly, inside, frac,
+             accepted) = layout_at(font_size)
+
+            if not check_fit:
+                break
 
             if accepted:
                 if poly_arr is None:
@@ -1763,24 +1808,46 @@ class SceneTextManager(QObject):
                 # justify the step: a line-bound block in a tall balloon has
                 # to rise until the long token must hyphenate, and min()
                 # alone stops one pixel short of full width while balloon
-                # height sits unused. Probes police every grown step and a
-                # failed look-ahead reverts below; no growth on the last two
-                # iterations, so the final layout matches the applied font.
-                room_w = mb_w * 0.98 / w
-                room_h = mb_h * 0.98 / h
-                room = max(room_w, room_h)
-                if room > 1.03 and _ < 11:
-                    good_text, good_xywh = new_text, xywh
-                    good_font = blk_font.pointSizeF()
-                    good_ratio = resize_ratio
-                    grow = min(room, 1.15)
-                    resize_ratio *= grow
-                    blk_font.setPointSizeF(good_font * grow)
-                    clean_wl = (np.array(clean_wl, np.float64) * grow).astype(np.int32).tolist()
-                    line_height = int(line_height * grow)
-                    delimiter_len = int(delimiter_len * grow)
-                    grew = True
-                    continue
+                # height sits unused. Probes police every grown step.
+                room = max(mb_w * 0.98 / w, mb_h * 0.98 / h)
+                if room <= 1.03:
+                    break
+                # Climb, and bisect the step instead of stopping at the first
+                # rejection: acceptance is not monotonic in font size (a word
+                # crossing a line budget moves a whole line, which can move the
+                # canvas off the outline), so a rejected step does not mean
+                # nothing larger fits. Stopping at the first rejection made
+                # the result depend on where the chain started, and the
+                # pipeline stores the fitted size and feeds it back as the
+                # next run's start - so every re-run moved the text. Climbing
+                # to the largest size that fits is what makes a re-run land
+                # where the last one did.
+                best_text, best_xywh = new_text, xywh
+                best_size, best_ratio = font_size, resize_ratio
+                # 1.15 is the biggest step that stays a step rather than a
+                # jump (a jump lands past a wrap change and reads as a
+                # different layout); 1.01 is where a further step is worth
+                # less than the pixel it costs. The probe budget only exists
+                # so a pathological layout cannot spin here.
+                step = min(room, 1.15)
+                for _step in range(24):
+                    if step <= 1.01:
+                        break
+                    cand = layout_at(best_size * step)
+                    if not cand.accepted:
+                        step = 1 + (step - 1) / 2
+                        continue
+                    best_text, best_xywh = cand.text, cand.xywh
+                    best_size, best_ratio = best_size * step, best_ratio * step
+                    room = max(mb_w * 0.98 / cand.w, mb_h * 0.98 / cand.h)
+                    if room <= 1.03:
+                        break
+                    step = min(room, 1.15)
+                # The last probe was a rejected overshoot; commit the last
+                # size that passed - the loop never saw it.
+                new_text, xywh = best_text, best_xywh
+                resize_ratio, font_size = best_ratio, best_size
+                blk_font.setPointSizeF(font_size)
                 break
 
             if poly_arr is None and inside and prev_frac >= 0 and frac - prev_frac < 0.015:
@@ -1791,14 +1858,6 @@ class SceneTextManager(QObject):
                 # the bubble at the fitted size).
                 break
             prev_frac = frac if inside else -1.0
-            if grew:
-                # The grown look-ahead failed the collision test: restore the
-                # last accepted layout. Shrinking from the overshoot would
-                # oscillate around the fill target.
-                new_text, xywh = good_text, good_xywh
-                blk_font.setPointSizeF(good_font)
-                resize_ratio = good_ratio
-                break
             # Scale toward the mask bbox; when the bbox size already fits,
             # only corner spill and placement offset remain. Corner spill
             # shrinks away; an anchored origin that stays off the mask after
@@ -1824,8 +1883,8 @@ class SceneTextManager(QObject):
             # while letting canvas converge onto boxes whose center sits
             # off the balloon center.
             min_size = orig_font_size * 0.15
-            if blk_font.pointSizeF() * scale < min_size:
-                scale = min_size / blk_font.pointSizeF()
+            if font_size * scale < min_size:
+                scale = min_size / font_size
             if scale >= 1:
                 # Bottom of the readability floor with text still outside
                 # the balloon. The block needs a shorter translation, a
@@ -1834,16 +1893,11 @@ class SceneTextManager(QObject):
                 LOGGER.warning(
                     'Text still overflows its balloon at the readability floor '
                     '(%.1fpx, %d lines): %r',
-                    blk_font.pointSizeF(), len(new_text.split('\n')), text[:40],
+                    font_size, len(new_text.split('\n')), text[:40],
                 )
                 break  # already at the floor
             resize_ratio *= scale
-            blk_font.setPointSizeF(blk_font.pointSizeF() * scale)
-            clean_wl = (np.array(clean_wl, np.float64) * scale).astype(np.int32).tolist()
-            # Keep at least one pixel: int truncation can zero the row pitch
-            # after enough shrink steps, which breaks every later layout.
-            line_height = max(1, int(line_height * scale))
-            delimiter_len = max(1, int(delimiter_len * scale))
+            font_size *= scale
 
         # font size post adjustment
         post_resize_ratio = 1

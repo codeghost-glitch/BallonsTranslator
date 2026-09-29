@@ -75,6 +75,18 @@ take the coverage-plateau exit; they converge on the probes or the readability
 floor. Detectors without outlines keep the legacy flood-fill path with its 90%
 mask-coverage rule.
 
+The fit is a search over font sizes, and it is a function of the size alone:
+every width the wrap works from is measured at the size being probed, never
+scaled up from the size the search started at. Below the start it shrinks until
+a size is accepted; above it, a size that fits climbs (at most 1.15x a step) and
+bisects the step when a step is rejected, so the largest fitting size wins.
+Acceptance is not monotonic in font size — a word crossing a line budget moves a
+whole line, which can move the canvas off the outline — so the climb may not
+stop at the first rejection. One answer per block is a contract, not a nicety:
+the pipeline stores the fitted size and feeds it back as the next run's start,
+so a search that stopped early or settled on a different local answer would
+move the text on every pass. `tests/test_horizontal_fit_idempotence.py` pins it.
+
 An outline holding several blocks (one balloon, two runs) fits each block
 against a band clipped from that outline. The detection box each block enlarges
 into its search window is three times the box, so neighbouring columns get
@@ -112,7 +124,8 @@ Two refinements, both config-gated:
   to per-character if the library is absent.
 
 Verification: `tests/test_auto_layout_fit.py` (fit, collision, centering,
-shape-aware budget) and `tests/test_text_layout.py` (hyphenation, row-width
+shape-aware budget), `tests/test_horizontal_fit_idempotence.py` (re-runs land
+on the same size) and `tests/test_text_layout.py` (hyphenation, row-width
 budget).
 
 Use these coordinate-space names consistently:

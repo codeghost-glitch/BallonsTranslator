@@ -351,7 +351,13 @@ class TestAutoLayoutFit(unittest.TestCase):
         )
         result = SceneTextManager.layout_textblk(stub, item, text=LONG_TEXT)
         self.assertIs(result, True)
-        self.assertGreaterEqual(item.font().pointSizeF(), 12.0)
+        # 11.5 is where this text tops out: the block's first line is at
+        # y=130 and the balloon ends at 260, so a seventh line at 19px pitch
+        # (12.1) hangs 3px below the bubble. It used to be accepted because
+        # the fit scaled the line pitch up from the starting size and lost a
+        # percent per step, which also let a grown layout sit outside the
+        # balloon - the probes were grading a canvas nobody rendered.
+        self.assertGreaterEqual(item.font().pointSizeF(), 11.0)
         poly_arr = np.asarray(poly, np.float32)
         br = item.absBoundingRect(qrect=True)
         fm = QFontMetricsF(item.font())
