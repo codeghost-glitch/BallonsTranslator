@@ -507,13 +507,23 @@ def _nearby_mask_extent(
         return None
     x1, y1, x2, y2 = box
     slack = max(x2 - x1, y2 - y1)
-    count, _, stats, _ = cv2.connectedComponentsWithStats(
-        det_mask.astype(np.uint8), 8
-    )
+    # Each per-instance mask is full-page (the caller indexes it into a
+    # page mask), so running connected components over the whole page costs
+    # O(page area) once per text box. Every component of a mask lies inside
+    # the mask's own bounding box, so scan only that box: exact (no component
+    # is ever cut) and small, because a text mask's extent is roughly its
+    # detection box. A mask carrying a far stray fragment has a large bbox
+    # and falls back to near-full-page cost - the rare, already-slow case.
+    mask_u8 = det_mask.astype(np.uint8)
+    bx0, by0, bw0, bh0 = cv2.boundingRect(mask_u8)
+    if bw0 == 0 or bh0 == 0:
+        return None
+    window = mask_u8[by0:by0 + bh0, bx0:bx0 + bw0]
+    count, _, stats, _ = cv2.connectedComponentsWithStats(window, 8)
     extent = None
     for idx in range(1, count):
-        left = int(stats[idx, cv2.CC_STAT_LEFT])
-        top = int(stats[idx, cv2.CC_STAT_TOP])
+        left = int(stats[idx, cv2.CC_STAT_LEFT]) + bx0
+        top = int(stats[idx, cv2.CC_STAT_TOP]) + by0
         right = left + int(stats[idx, cv2.CC_STAT_WIDTH])
         bottom = top + int(stats[idx, cv2.CC_STAT_HEIGHT])
         dx = max(0, left - x2, x1 - right)

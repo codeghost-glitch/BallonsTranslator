@@ -110,6 +110,33 @@ def test_stray_mask_fragment_does_not_stretch_block_box():
     assert _nearby_mask_extent(None, box) is None
 
 
+def test_nearby_mask_extent_scans_only_its_own_mask_bbox():
+    """The connected-components scan is cropped to the mask's own bbox.
+
+    Per-instance masks are full-page, so scanning the whole page per text
+    box is O(page area) once per box (the source of a multi-second stall on
+    a real chapter). Scanning the mask's own bounding box is exact - every
+    component lives inside it - and stays correct when the mask is offset
+    from the page origin, so component stats must be offset back before the
+    distance test.
+    """
+    from custom_modules.detector_koharu_layout import _nearby_mask_extent
+
+    # Mask sits well inside a larger page; several components, one of them a
+    # near fragment that must widen the box.
+    mask = np.zeros((2000, 3000), bool)
+    mask[900:1000, 1400:1520] = True    # the detection's own run
+    mask[880:905, 1410:1430] = True      # spill above, within slack
+    mask[1200, 100] = True              # stray far fragment, ignored
+    box = (1400, 900, 1520, 1000)
+    assert _nearby_mask_extent(mask, box) == (1400, 880, 1520, 1000)
+
+    # A mask flush against the page's top-left corner: origin offsets are 0.
+    corner = np.zeros((2000, 3000), bool)
+    corner[10:60, 20:80] = True
+    assert _nearby_mask_extent(corner, (20, 10, 80, 60)) == (20, 10, 80, 60)
+
+
 def test_split_two_lobed_separates_joined_bubbles():
     from custom_modules.detector_koharu_layout import _split_two_lobed
 
