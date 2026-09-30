@@ -15,6 +15,7 @@ from ballontranslator.ui.text_engine.item import TextBlkItem
 from ballontranslator.utils.config import pcfg
 from ballontranslator.utils.imgproc_utils import extract_ballon_region
 from ballontranslator.utils.textblock import TextAlignment, TextBlock
+from ballontranslator.utils.text_layout import row_width_profile
 
 # White ellipse balloon (300x200) on a gray page; the text block sits inside it.
 IMG_H, IMG_W = 400, 500
@@ -433,7 +434,16 @@ class TestAdvisoryHyphenation(unittest.TestCase):
         )
         SceneTextManager.layout_textblk(stub, item, text=text)
         rendered = item.toPlainText()
-        return item.font().pointSizeF(), rendered.split('\n'), rendered
+        rect = item.absBoundingRect()
+        return item.font().pointSizeF(), rendered.split('\n'), rendered, rect
+
+    def _tall_balloon(self):
+        # 160x280: as tall as it is wide, the shape of the balloons that
+        # left the biggest gap between the text and the balloon floor.
+        img = np.full((IMG_H, IMG_W, 3), 90, np.uint8)
+        cv2.ellipse(img, (250, 200), (80, 140), 0, 0, 360, (255, 255, 255), -1)
+        poly = cv2.ellipse2Poly((250, 200), (80, 140), 0, 0, 360, 60).reshape(-1, 2).tolist()
+        return img, poly
 
     def _wide_balloon(self):
         img = np.full((IMG_H, IMG_W, 3), 90, np.uint8)
@@ -457,7 +467,7 @@ class TestAdvisoryHyphenation(unittest.TestCase):
         img = np.full((1800, 500, 3), 90, np.uint8)
         cv2.ellipse(img, (250, 1600), (150, 100), 0, 0, 360, (255, 255, 255), -1)
         poly = cv2.ellipse2Poly((250, 1600), (150, 100), 0, 0, 360, 6).reshape(-1, 2).tolist()
-        size, lines, rendered = self._fit(
+        size, lines, rendered, _rect = self._fit(
             img, poly, [170, 1550, 330, 1650], [170, 1550, 160, 100],
             'The station announced the delay to everyone waiting.',
         )
@@ -478,10 +488,47 @@ class TestAdvisoryHyphenation(unittest.TestCase):
             M.hyphenate_long_words = original
         self.assertEqual(with_h, without)
 
+    def test_the_split_budget_is_the_wrap_column_not_the_widest_row(self) -> None:
+        # The pre-pass only splits a token wider than this budget, so the
+        # budget decides how finely the text can be divided before the fit
+        # ever sees it. Budgeting the balloon's widest row gave tall
+        # balloons a coarse candidate that the fit had to accept at
+        # whatever size that one allowed: page 001 of a 9-page chapter
+        # fitted "And make sure to stock up on drinking water frequently."
+        # at 10.8pt with half the balloon's height unused, and the same
+        # text on the wrap column fits at 13.1pt. The wrap column is what
+        # the call site's own comment has always said the budget is.
+        img, poly = self._tall_balloon()
+        arr = np.asarray(poly, np.float32)
+        bx, by, _bw, bh = cv2.boundingRect(arr)
+        # The same measurement the fit makes, so the test compares like
+        # with like: a filled mask's row sums are a pixel wider than the
+        # outline's own extent at some rows.
+        left, right, _y0 = row_width_profile(arr - np.array([bx, by], np.float32), 0, bh)
+        widest = float(np.nanmax(np.where(right > left, right - left, 0.0)))
+
+        budgets = []
+        original = M.hyphenate_long_words
+        M.hyphenate_long_words = (
+            lambda w, wl, m, l, b: (budgets.append(b), (w, wl))[1])
+        try:
+            self._fit(img, poly, [170, 60, 330, 340], [170, 60, 160, 280],
+                      'And make sure to stock up on drinking water frequently.')
+        finally:
+            M.hyphenate_long_words = original
+
+        self.assertTrue(budgets, 'the split budget was never consulted')
+        # One constant for every probed size: the column is a property of
+        # the balloon, not of the font being probed.
+        self.assertEqual(len(set(budgets)), 1, budgets)
+        for budget in budgets:
+            self.assertLess(budget, widest, 'budgeted against the widest row')
+            self.assertAlmostEqual(budget, widest * 0.72, places=3)
+
     def test_split_used_only_when_unhyphenated_cannot_fit(self) -> None:
         img, poly = self._narrow_balloon()
         text = 'Donaudampfschiffahrtsgesellschaft'
-        size, lines, rendered = self._fit(
+        size, lines, rendered, _rect = self._fit(
             img, poly, [200, 140, 300, 220], [200, 140, 100, 80], text
         )
         self.assertIn('-', rendered)

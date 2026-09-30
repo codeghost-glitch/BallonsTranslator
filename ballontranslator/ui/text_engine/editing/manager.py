@@ -1697,21 +1697,35 @@ class SceneTextManager(QObject):
                 # pyphen wants a language code; translate_target is a
                 # display name, and language_fallback('English') returns
                 # None, which the helper's own guard turns into a silent
-                # no-op. The budget is the width the wrap applies, not the
-                # bounding box, so a word measured here cannot pass the
-                # gate and still overrun its line.
+                # no-op.
                 hy_words, hy_wl = hyphenate_long_words(
                     words, wl, hyphen_measure,
                     # hyphenator is not None => the target is in the table,
                     # so this always yields a real pyphen code (never the
                     # 'en' that would mis-split a non-hyphenating script).
                     PYPHEN_LANGS[pcfg.module.translate_target],
-                    # Split tokens against the full outline width, not the
-                    # wrapped column: a long token that must break fills the
-                    # balloon edge to edge (professional lettering does the
-                    # same - THERMO-METER spans the bubble), while ordinary
-                    # words still wrap at the narrower column.
-                    float(widest) if widest > 0 else float(mask.shape[1]),
+                    # The budget is the width the wrap applies, not the
+                    # bounding box, so a word measured here cannot pass the
+                    # gate and still overrun its line. The pre-pass only
+                    # splits a token wider than this budget, so the budget
+                    # also decides how finely the text can be divided
+                    # before the fit sees it at all, and a coarse budget
+                    # leaves a tall balloon a candidate the fit has to take
+                    # at whatever size that one allows. "And make sure to
+                    # stock up on drinking water frequently." in a 167x287
+                    # balloon is the case: at the 157px widest row the fit
+                    # accepted 10.8pt with half the balloon's height unused,
+                    # at the 113px column the same text fits 13.1pt, 87%.
+                    #
+                    # This only widens the fit's candidate set: the
+                    # unhyphenated layout is still tried first and still wins
+                    # whenever it passes, so a worse split can never be chosen
+                    # over a layout that was already accepted. The edge-to-edge
+                    # look for a deliberate single token (THERMO-METER
+                    # spanning the bubble) is the line-breaker's own in-line
+                    # hyphenation, which is untouched here.
+                    float(max_central_width) if np.isfinite(max_central_width)
+                    else (float(widest) if widest > 0 else float(mask.shape[1])),
                 )
                 if hy_words != words:
                     attempts.append((hy_words, hy_wl))
