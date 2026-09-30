@@ -135,7 +135,20 @@ _HYPHEN_BREAK = '\x1e'
 # the slightly smaller unsplit word costs in a tight balloon. Shared by the
 # advisory pre-split and the in-line break, which must agree or a word that
 # the pre-split leaves whole still gets broken later.
+#
+# The same rule covers a token that is not a word at all. seg_eng glues a
+# word of one or two letters to a neighbour so a line can carry them as one
+# unit ("sure to", "up on", "a tod-"), and the line breaker then treats that
+# run as indivisible. A hyphen is only ever legal inside a word, so such a
+# token passes through whole: splitting it would render "sure-" / " to".
 _MIN_HYPHEN_WORD = 6
+
+# The shortest piece a break may leave on either side, head and tail alike.
+# Three characters is the shortest fragment that still reads as a syllable;
+# one or two read as a typo on the page ("fre- quentl- y."), and a broken word
+# is worse than a word that overhangs its line by a glyph. Shared with the
+# in-line break for the same reason as _MIN_HYPHEN_WORD.
+_MIN_PIECE = 3
 
 
 def _hyphen_head_for_line(
@@ -151,7 +164,9 @@ def _hyphen_head_for_line(
     if hyphenator is None or measure is None:
         return None
     best = None
-    if len(word) < _MIN_HYPHEN_WORD:
+    # See _MIN_HYPHEN_WORD: a short word, or a run of words seg_eng glued
+    # into one token, has no legal break point at all.
+    if len(word) < _MIN_HYPHEN_WORD or ' ' in word:
         return None
     for p in hyphenator.positions(word):
         if p <= 0 or p >= len(word):
@@ -691,10 +706,11 @@ def hyphenate_long_words(
     its pristine word list and tries the unhyphenated layout first, so a
     break that was not needed never survives into a passing layout. Tokens
     shorter than six characters stay whole, and every break keeps at least
-    two characters on each side, which keeps single-syllable fragments out
-    of ordinary prose. The six-character floor is a typographic minimum: a
-    shorter word split 2+2 leaves a fragment that reads as a typo, and
-    forcing one costs more than the slightly smaller unsplit word.
+    three characters on each side, which keeps single-syllable fragments out
+    of ordinary prose. Both floors are typographic minimums: a shorter word
+    split 2+2 leaves a fragment that reads as a typo, and a longer word cut
+    until only a stub is left ("fre- quentl- y.") is worse still, so a word
+    that cannot be split cleanly stays whole and overhangs its line.
 
     A token pyphen cannot split at a linguistic point (a URL, a sound
     effect, a foreign run) is force-broken at the widest prefix that fits.
@@ -711,7 +727,9 @@ def hyphenate_long_words(
     >>> hyphenate_long_words(['OK'], [30], lambda s: len(s) * 10, 'en', 60)
     (['OK'], [30])
     >>> hyphenate_long_words(['extraordinary'], [110], lambda s: len(s) * 10, 'en', 60)
-    (['ex\x1e', 'traor\x1e', 'dinary'], [30, 60, 60])
+    (['extra\x1e', 'ordin\x1e', 'ary'], [60, 60, 30])
+    >>> hyphenate_long_words(['mother'], [60], lambda s: len(s) * 10, 'en', 20)
+    (['mother'], [60])
     >>> hyphenate_long_words(['onto'], [400], lambda s: len(s) * 10, 'en', 60)
     (['onto'], [400])
     >>> hyphenate_long_words(['What?'], [400], lambda s: len(s) * 10, 'en', 60)
@@ -726,11 +744,10 @@ def hyphenate_long_words(
         return words, wl_list
     out_words, out_wl = [], []
     for word, width in zip(words, wl_list):
-        # Balloon-tight fragment bounds: a two-character wing on either
-        # side is the smallest piece that still reads as part of a word.
-        min_prefix, min_suffix = 2, 2
-        # See _MIN_HYPHEN_WORD: a short word stays whole and simply shrinks.
-        if len(word) < _MIN_HYPHEN_WORD:
+        # See _MIN_HYPHEN_WORD: a short word stays whole and simply shrinks,
+        # and so does a run of words seg_eng glued into one token - there is
+        # no legal break point inside "sure to".
+        if len(word) < _MIN_HYPHEN_WORD or ' ' in word:
             out_words.append(word)
             out_wl.append(width)
             continue
@@ -738,10 +755,13 @@ def hyphenate_long_words(
         # Segments that land on one line are joined back together at render
         # (see _join_hyphen_runs); only a segment that actually ends the
         # line shows its hyphen, so the extra cuts cost nothing visually.
-        while width > max_width and len(word) >= 5:
+        # A cut that would leave a piece under _MIN_PIECE is refused: the
+        # word then stays whole and overhangs its line by whatever is left,
+        # which reads far better than a stub on the page.
+        while width > max_width and len(word) >= 2 * _MIN_PIECE:
             positions = [
                 p for p in dic.positions(word)
-                if min_prefix <= p <= len(word) - min_suffix
+                if _MIN_PIECE <= p <= len(word) - _MIN_PIECE
             ]
             split = None
             for p in positions:
@@ -757,8 +777,12 @@ def hyphenate_long_words(
                 # axis unused. Force a character break instead; the head
                 # carries _HYPHEN_BREAK, so _join_hyphen_runs hides it on a
                 # shared line and shows a hyphen only at a real line end.
-                forced = _widest_fitting_prefix(word, max_width, measure, min_suffix)
-                if forced is None:
+                forced = _widest_fitting_prefix(word, max_width, measure, _MIN_PIECE)
+                # _widest_fitting_prefix already guarantees the tail; the
+                # head is the remaining side. Nothing splits this word into
+                # two readable pieces, so leave it whole and let the line
+                # overhang rather than print a stub.
+                if forced is None or forced < _MIN_PIECE:
                     break  # not even one glyph fits: leave it to overflow
                 out_words.append(word[:forced] + _HYPHEN_BREAK)
                 out_wl.append(measure(word[:forced] + '-'))

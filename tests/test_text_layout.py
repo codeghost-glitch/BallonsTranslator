@@ -1,6 +1,7 @@
 import unittest
 
 from ballontranslator.utils.text_layout import (
+    _MIN_PIECE as MIN_PIECE,
     Line,
     hyphenate_long_words,
     line_is_valid,
@@ -40,16 +41,15 @@ class TestHyphenateLongWords(unittest.TestCase):
 
     def test_word_at_the_floor_still_splits(self) -> None:
         # The floor must not swallow real hyphenation: a 6-character word
-        # too wide for the budget still breaks.
+        # too wide for the budget still breaks. The budget has to admit the
+        # only legal split of a six-letter word, 3+3 - 'can-' is four
+        # characters wide, so anything below 40 here would be asking for the
+        # stub that _MIN_PIECE exists to refuse.
         if not HAS_PYPHEN:
             self.skipTest('pyphen not installed')
         measure = lambda s: len(s) * 10
-        words, _ = hyphenate_long_words(['cannot'], [60], measure, 'en', 30)
-        self.assertGreater(len(words), 1)
-        self.assertEqual(
-            ''.join(w[:-1] if w.endswith(BREAK) else w for w in words),
-            'cannot',
-        )
+        words, _ = hyphenate_long_words(['cannot'], [60], measure, 'en', 40)
+        self.assertEqual(words, ['can' + BREAK, 'not'])
 
     def test_long_token_splits_at_linguistic_point(self) -> None:
         if not HAS_PYPHEN:
@@ -80,6 +80,52 @@ class TestHyphenateLongWords(unittest.TestCase):
             'x' * 40,
         )
         self.assertLessEqual(max(wl), 80)
+
+
+    def test_no_piece_is_shorter_than_the_readable_minimum(self) -> None:
+        # The complaint that produced _MIN_PIECE: a word twice its budget
+        # was cut three times and rendered 'fre- quentl- y.'. Every piece
+        # on both sides of every break must stay readable, over a range of
+        # budgets wide enough to force both the pyphen and forced paths.
+        if not HAS_PYPHEN:
+            self.skipTest('pyphen not installed')
+        measure = lambda s: len(s) * 10
+        for word in ('frequently.', 'extraordinary', 'unquestionably', 'x' * 24):
+            for budget in range(20, 200, 7):
+                words, _ = hyphenate_long_words([word], [400], measure, 'en', budget)
+                for piece in words:
+                    text = piece[:-1] if piece.endswith(BREAK) else piece
+                    self.assertGreaterEqual(
+                        len(text), MIN_PIECE,
+                        f'{word!r} at {budget}px produced a stub {piece!r}',
+                    )
+                # Pieces are still the original word, and the loop terminated.
+                self.assertEqual(
+                    ''.join(w[:-1] if w.endswith(BREAK) else w for w in words),
+                    word,
+                )
+
+    def test_a_word_too_tight_to_split_is_left_whole(self) -> None:
+        # Refusing a stub must not shrink the split to a two-letter wing
+        # either: 'mother' at 20px cannot become 'mo-ther' (the tail is four)
+        # nor 'm-other' (the head is one), so it stays whole and overhangs.
+        measure = lambda s: len(s) * 10
+        self.assertEqual(
+            hyphenate_long_words(['mother'], [60], measure, 'en', 20),
+            (['mother'], [60]),
+        )
+
+
+    def test_a_run_of_words_is_never_broken_across_its_space(self) -> None:
+        # seg_eng glues a one- or two-letter word to its neighbour so a line
+        # can carry them as one unit, and the result is a single token that
+        # is longer than the floor. Splitting it rendered 'sure-' / ' to'.
+        measure = lambda s: len(s) * 10
+        for run in ('sure to', 'up on', 'a tod'):
+            self.assertEqual(
+                hyphenate_long_words([run], [400], measure, 'en', 20),
+                ([run], [400]),
+            )
 
 
 class TestRowProfileLineBudget(unittest.TestCase):
