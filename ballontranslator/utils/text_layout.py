@@ -149,6 +149,12 @@ _MIN_HYPHEN_WORD = 6
 # is worse than a word that overhangs its line by a glyph. Shared with the
 # in-line break for the same reason as _MIN_HYPHEN_WORD.
 _MIN_PIECE = 3
+# Balloon lettering breaks a word once or twice, not repeatedly: the
+# line-breaker closes a line with an in-line hyphenation head for whatever
+# still does not fit, so a third advisory cut only adds a hyphen the reader
+# has to read past. Measured on a 167x287 balloon, one cut per word cost
+# 13.1pt -> 10.9pt against two, for no readable gain.
+_MAX_CUTS_PER_WORD = 2
 
 
 def _hyphen_head_for_line(
@@ -705,19 +711,21 @@ def hyphenate_long_words(
     Candidates are advisory: the caller derives them per layout attempt from
     its pristine word list and tries the unhyphenated layout first, so a
     break that was not needed never survives into a passing layout. Tokens
-    shorter than six characters stay whole, and every break keeps at least
-    three characters on each side, which keeps single-syllable fragments out
-    of ordinary prose. Both floors are typographic minimums: a shorter word
-    split 2+2 leaves a fragment that reads as a typo, and a longer word cut
-    until only a stub is left ("fre- quentl- y.") is worse still, so a word
-    that cannot be split cleanly stays whole and overhangs its line.
+    shorter than six characters stay whole, every break keeps at least three
+    characters on each side, and a word is cut at most
+    ``_MAX_CUTS_PER_WORD`` times. Those are all typographic minimums: a
+    shorter word split 2+2 leaves a fragment that reads as a typo, a word cut
+    until only a stub is left ("fre- quentl- y.") is worse still, and a third
+    cut turns one long word into a hyphen the reader has to read past twice.
+    A word that cannot be cut cleanly stays whole and overhangs its line.
 
     A token pyphen cannot split at a linguistic point (a URL, a sound
-    effect, a foreign run) is force-broken at the widest prefix that fits.
-    Letting it stay whole overflows the line and pins the fit small, so a
-    tall balloon's spare height goes unused; the break lets balloon
-    typesetting grow the font to fill it. The forced head carries the same
-    internal break marker as a pyphen head, so it is hidden on a shared
+    effect, a foreign run) is force-broken at the widest prefix that fits,
+    as often as it takes: such a token has no typography to protect, only a
+    width to meet. Letting it stay whole overflows the line and pins the fit
+    small, so a tall balloon's spare height goes unused; the break lets
+    balloon typesetting grow the font to fill it. The forced head carries the
+    same internal break marker as a pyphen head, so it is hidden on a shared
     line and hyphenated only at a real line end.
 
     Unknown languages fall back through pyphen's language mapping; without
@@ -758,6 +766,7 @@ def hyphenate_long_words(
         # A cut that would leave a piece under _MIN_PIECE is refused: the
         # word then stays whole and overhangs its line by whatever is left,
         # which reads far better than a stub on the page.
+        cuts = 0
         while width > max_width and len(word) >= 2 * _MIN_PIECE:
             positions = [
                 p for p in dic.positions(word)
@@ -788,11 +797,63 @@ def hyphenate_long_words(
                 out_wl.append(measure(word[:forced] + '-'))
                 word = word[forced:]
                 width = measure(word)
+                # Not counted against _MAX_CUTS_PER_WORD: such a token has no
+                # typography to protect, only a width to meet.
                 continue
+            if cuts >= _MAX_CUTS_PER_WORD:
+                # A linguistic word stops after _MAX_CUTS_PER_WORD cuts. What
+                # is left is closed by the line-breaker's own in-line
+                # hyphenation, and a further cut buys room at the price of
+                # another hyphen the reader has to read past.
+                break
             out_words.append(word[:split] + _HYPHEN_BREAK)
             out_wl.append(measure(word[:split] + '-'))
             word = word[split:]
             width = measure(word)
+            cuts += 1
         out_words.append(word)
         out_wl.append(width)
+    return out_words, out_wl
+
+
+def split_run_tokens(
+    words: List[str],
+    wl_list: List[int],
+    measure,
+    max_width: int,
+) -> Tuple[List[str], List[int]]:
+    r"""Give a run of glued words its spaces back when the run is too wide.
+
+    ``seg_eng`` glues a one or two letter word to its neighbour ("me" + "like"
+    + "a" become the single token "me like a") so a short word never sits
+    alone on a line. The wrap treats a token as indivisible, so once such a
+    run is wider than the line budget it is the run, not the longest word in
+    it, that sets the line width - and with it the font the fit may use. A
+    tall narrow balloon then gets a short stack of wide lines with most of its
+    height unused, which is the block looking like a rectangle dropped into
+    an ellipse.
+
+    Only runs wider than the budget are split: a run that fits keeps the glue
+    that stops "a" from being orphaned, which is the whole point of it.
+    Splitting at the space is an ordinary word break, so nothing is
+    hyphenated here. ``measure`` maps a string to its pixel width in the
+    current layout font.
+
+    >>> split_run_tokens(['And', 'me like a', 'toddler...'],
+    ...                  [30, 114, 89], lambda s: len(s) * 10, 91)
+    (['And', 'me', 'like', 'a', 'toddler...'], [30, 20, 40, 10, 89])
+    >>> split_run_tokens(['OK'], [20], lambda s: len(s) * 10, 91)
+    (['OK'], [20])
+    """
+    if not words or max_width <= 0:
+        return words, wl_list
+    out_words, out_wl = [], []
+    for word, width in zip(words, wl_list):
+        if ' ' not in word or width <= max_width:
+            out_words.append(word)
+            out_wl.append(width)
+            continue
+        for part in word.split(' '):
+            out_words.append(part)
+            out_wl.append(measure(part))
     return out_words, out_wl

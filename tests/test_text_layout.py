@@ -6,6 +6,7 @@ from ballontranslator.utils.text_layout import (
     hyphenate_long_words,
     line_is_valid,
     row_width_profile,
+    split_run_tokens,
 )
 
 try:
@@ -126,6 +127,61 @@ class TestHyphenateLongWords(unittest.TestCase):
                 hyphenate_long_words([run], [400], measure, 'en', 20),
                 ([run], [400]),
             )
+
+    def test_a_linguistic_word_is_cut_at_most_twice(self) -> None:
+        # Cutting a word until it fits the budget shredded it: at 60px
+        # 'frequently.' came out as 'fre-' / 'quentl-' / 'y.' with a
+        # one-letter tail. Two cuts still divide a word far wider than the
+        # line; what is left is closed by the line-breaker's own in-line
+        # hyphenation.
+        measure = lambda s: len(s) * 10
+        words, _ = hyphenate_long_words(['frequently.'], [110], measure, 'en', 60)
+        self.assertLessEqual(len(words), 3)
+        self.assertTrue(all(len(w.rstrip(BREAK)) >= MIN_PIECE for w in words))
+
+    def test_a_token_with_no_break_point_is_still_cut_until_it_fits(self) -> None:
+        # The cut limit protects typography, not width: a run pyphen has no
+        # point for has nothing to protect, and leaving it whole would
+        # overflow its line.
+        measure = lambda s: len(s) * 10
+        words, wl = hyphenate_long_words(['x' * 40], [400], measure, 'en', 80)
+        self.assertLessEqual(max(wl), 80)
+
+
+class TestSplitRunTokens(unittest.TestCase):
+
+    def test_a_run_wider_than_the_budget_gives_its_spaces_back(self) -> None:
+        # The wrap cannot break a token, so a glued run wider than the line
+        # sets the line width and with it the font: "Treating me like a
+        # toddler..." fitted at 8.6pt in a 127x174 balloon, 40% of the
+        # height, because 'me like a' was 125px wide.
+        self.assertEqual(
+            split_run_tokens(['Treating', 'me like a', 'toddler...'],
+                             [102, 114, 127], lambda s: len(s) * 10, 90),
+            (['Treating', 'me', 'like', 'a', 'toddler...'], [102, 20, 40, 10, 127]),
+        )
+
+    def test_a_run_that_fits_keeps_its_glue(self) -> None:
+        # The glue is what stops "a" from being orphaned on a line of its
+        # own, so a run inside the budget must not be taken apart.
+        words, wl = ['And', 'sure to', 'up on'], [30, 70, 60]
+        self.assertEqual(
+            split_run_tokens(words, wl, lambda s: len(s) * 10, 90), (words, wl),
+        )
+
+    def test_a_plain_word_is_never_split(self) -> None:
+        # Only a run has a space to break at; a lone word is the
+        # hyphenation pre-pass's business, not this one's.
+        words, wl = ['frequently.'], [138]
+        self.assertEqual(
+            split_run_tokens(words, wl, lambda s: len(s) * 10, 90), (words, wl),
+        )
+
+    def test_no_budget_leaves_every_run_alone(self) -> None:
+        words, wl = ['me like a'], [114]
+        self.assertEqual(
+            split_run_tokens(words, wl, lambda s: len(s) * 10, 0), (words, wl),
+        )
 
 
 class TestRowProfileLineBudget(unittest.TestCase):

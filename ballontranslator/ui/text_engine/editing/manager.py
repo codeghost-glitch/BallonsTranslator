@@ -43,6 +43,7 @@ from ballontranslator.utils.text_processing import seg_text, is_cjk
 from ballontranslator.utils.text_layout import (
     layout_text,
     hyphenate_long_words,
+    split_run_tokens,
     row_width_profile,
 )
 
@@ -1553,12 +1554,16 @@ class SceneTextManager(QObject):
         # Optical line-end hyphenation for Latin scripts: the wrap loops
         # close a line with a word's hyphen-fitting head when the whole
         # word would break the budget. CJK scripts never hyphenate.
+        #
+        # The measure below is what both that and the word-list transforms in
+        # layout_at work from, so it exists whenever the target is not CJK,
+        # whether or not the target can hyphenate: a run-split candidate is
+        # still worth trying for a language with no pyphen rules.
         hyphenator = None
-        hyphen_measure = None
+        word_measure = None
         if not tgt_is_cjk:
             hyphenator = hyphenator_for_target(pcfg.module.translate_target)
-            if hyphenator is not None:
-                hyphen_measure = lambda s: text_size_func(s)[0]
+            word_measure = lambda s: text_size_func(s)[0]
 
         max_central_width = np.inf
         if fmt.alignment == 1:
@@ -1684,51 +1689,79 @@ class SceneTextManager(QObject):
             # later, smaller attempts to lines the text no longer needs.
             # Fresh word lists per attempt, because layout_lines pops from them.
             attempts = [(list(words), list(wl))]
-            # Gate on the same validated signal the line-breaker uses
-            # (hyphenator is not None only for a target that is in
-            # PYPHEN_LANGS *and* has real pyphen break rules), so a
-            # language that does not hyphenate is never split. The previous
-            # `PYPHEN_LANGS.get(target, 'en')` handed English rules to any
-            # unlisted target (Arabic, Thai, ...), chopping a connected
-            # script or a spaceless sentence at arbitrary characters; CJK is
-            # already excluded upstream. With this gate the target is
-            # guaranteed to be in the table, so the lookup always resolves.
-            if check_fit and hyphenator is not None and words:
-                # pyphen wants a language code; translate_target is a
-                # display name, and language_fallback('English') returns
-                # None, which the helper's own guard turns into a silent
-                # no-op.
+            # The budget is the width the wrap applies, not the bounding box,
+            # so a word measured here cannot pass the gate and still overrun
+            # its line. The pre-pass only splits a token wider than this
+            # budget, so the budget also decides how finely the text can be
+            # divided before the fit sees it at all, and a coarse budget
+            # leaves a tall balloon a candidate the fit has to take at whatever
+            # size that one allows. "And make sure to stock up on drinking
+            # water frequently." in a 167x287 balloon is the case: at the
+            # 157px widest row the fit accepted 10.8pt with half the balloon's
+            # height unused, at the 113px column the same text fits 13.1pt, 87%.
+            #
+            # This only widens the fit's candidate set: the unhyphenated
+            # layout is still tried first and still wins whenever it passes,
+            # so a worse split can never be chosen over a layout that was
+            # already accepted. The edge-to-edge look for a deliberate single
+            # token (THERMO-METER spanning the bubble) is the line-breaker's
+            # own in-line hyphenation, which is untouched here.
+            budget = (float(max_central_width) if np.isfinite(max_central_width)
+                      else (float(widest) if widest > 0 else float(mask.shape[1])))
+
+            def hyphenated(word_list, wl_list) -> Optional[Tuple[List, List]]:
+                """``word_list`` hyphenated against the budget, or None.
+
+                Gate on the same validated signal the line-breaker uses
+                (hyphenator is not None only for a target that is in
+                PYPHEN_LANGS *and* has real pyphen break rules), so a
+                language that does not hyphenate is never split. The previous
+                `PYPHEN_LANGS.get(target, 'en')` handed English rules to any
+                unlisted target (Arabic, Thai, ...), chopping a connected
+                script or a spaceless sentence at arbitrary characters; CJK is
+                already excluded upstream. With this gate the target is
+                guaranteed to be in the table, so the lookup always resolves.
+                """
+                if not (check_fit and hyphenator is not None and word_list):
+                    return None
                 hy_words, hy_wl = hyphenate_long_words(
-                    words, wl, hyphen_measure,
-                    # hyphenator is not None => the target is in the table,
-                    # so this always yields a real pyphen code (never the
-                    # 'en' that would mis-split a non-hyphenating script).
-                    PYPHEN_LANGS[pcfg.module.translate_target],
-                    # The budget is the width the wrap applies, not the
-                    # bounding box, so a word measured here cannot pass the
-                    # gate and still overrun its line. The pre-pass only
-                    # splits a token wider than this budget, so the budget
-                    # also decides how finely the text can be divided
-                    # before the fit sees it at all, and a coarse budget
-                    # leaves a tall balloon a candidate the fit has to take
-                    # at whatever size that one allows. "And make sure to
-                    # stock up on drinking water frequently." in a 167x287
-                    # balloon is the case: at the 157px widest row the fit
-                    # accepted 10.8pt with half the balloon's height unused,
-                    # at the 113px column the same text fits 13.1pt, 87%.
-                    #
-                    # This only widens the fit's candidate set: the
-                    # unhyphenated layout is still tried first and still wins
-                    # whenever it passes, so a worse split can never be chosen
-                    # over a layout that was already accepted. The edge-to-edge
-                    # look for a deliberate single token (THERMO-METER
-                    # spanning the bubble) is the line-breaker's own in-line
-                    # hyphenation, which is untouched here.
-                    float(max_central_width) if np.isfinite(max_central_width)
-                    else (float(widest) if widest > 0 else float(mask.shape[1])),
-                )
-                if hy_words != words:
-                    attempts.append((hy_words, hy_wl))
+                    word_list, wl_list, word_measure,
+                    # pyphen wants a language code; translate_target is a
+                    # display name, and language_fallback('English') returns
+                    # None, which the helper's own guard turns into a silent
+                    # no-op. The gate above => the target is in the table, so
+                    # this always yields a real pyphen code (never the 'en'
+                    # that would mis-split a non-hyphenating script).
+                    PYPHEN_LANGS[pcfg.module.translate_target], budget)
+                return (hy_words, hy_wl) if hy_words != word_list else None
+
+            hy = hyphenated(words, wl)
+            if hy is not None:
+                attempts.append(hy)
+
+            # Last resort, and the only candidates whose word list is not the
+            # pristine one: a run seg_eng glued together can be wider than the
+            # line (it glued "me"+"like"+"a" into "me like a"), and the wrap
+            # cannot break a token, so that run sets the line width and with it
+            # the font. A tall narrow balloon then gets a few wide lines with
+            # most of its height unused - "Treating me like a toddler..." in a
+            # 127x174 balloon fitted at 8.6pt, 40% of the height, because the
+            # run was 125px wide; split at its spaces the same text reaches
+            # 10.9pt at 70%. It needs the hyphenated variant too, since the
+            # word that ends up longest is then a lone one ("toddler...").
+            #
+            # Last, deliberately: every candidate above still runs first, so a
+            # block whose glued layout passes keeps exactly the size it had and
+            # this only rescues the blocks the glue was capping. Without a wrap
+            # column (side-aligned blocks) nothing is over budget, so the split
+            # would be a no-op and is not built.
+            if check_fit and words and np.isfinite(max_central_width):
+                sp_words, sp_wl = split_run_tokens(words, wl, word_measure, int(max_central_width))
+                if sp_words != words:
+                    attempts.append((sp_words, sp_wl))
+                    hy = hyphenated(sp_words, sp_wl)
+                    if hy is not None:
+                        attempts.append(hy)
 
             x = y = w = h = lx = ly = 0
             inside, frac, accepted = False, -1.0, False
@@ -1751,7 +1784,7 @@ class SceneTextManager(QObject):
                     ref_src_lines=ref_src_lines,
                     row_profile=row_profile,
                     hyphenator=hyphenator,
-                    measure=hyphen_measure
+                    measure=word_measure
                 )
                 if not check_fit:
                     break
