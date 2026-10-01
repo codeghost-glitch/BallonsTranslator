@@ -26,6 +26,29 @@ class _Stub:
     _vertical_column_rects = staticmethod(SceneTextManager._vertical_column_rects)
 
 
+class _DispatchStub(_Stub):
+    """_Stub plus what layout_textblk reads before it branches.
+
+    The dispatcher opens by loading the project image, so a stub that
+    cannot supply one can never reach the vertical branch. Recording the
+    routing here lets the dispatch be asserted directly instead of through
+    the function's source text.
+    """
+
+    class _Proj:
+        img_array = np.zeros((64, 64, 3), dtype=np.uint8)
+
+    imgtrans_proj = _Proj()
+
+    def __init__(self) -> None:
+        self.vertical_calls: list = []
+
+    def _layout_textblk_vertical(self, blkitem, text, mask, bounding_rect, region_rect):
+        self.vertical_calls.append(blkitem.blk)
+        return SceneTextManager._layout_textblk_vertical(
+            self, blkitem, text, mask, bounding_rect, region_rect)
+
+
 def _make_vertical_item(box, text, font_size=18.0):
     x, y, w, h = box
     block = TextBlock([x, y, x + w, y + h])
@@ -148,12 +171,14 @@ class TestVerticalAutoFit(unittest.TestCase):
 
     def test_dispatch_reaches_vertical_fit(self) -> None:
         # layout_textblk must route a vertical block into the vertical fit
-        # instead of the horizontal path's early return.
-        import inspect
-        src = inspect.getsource(SceneTextManager.layout_textblk)
-        self.assertIn('_layout_textblk_vertical', src)
-        # The old blanket "vertical not supported" bail must be gone.
-        self.assertNotIn('vertical writing is not supported', src)
+        # rather than falling into the horizontal path. This calls the real
+        # dispatcher; deleting the branch makes it fail on the horizontal
+        # path instead, which is what the previous source-text assertion
+        # could not detect.
+        stub = _DispatchStub()
+        item = _make_vertical_item([100, 100, 165, 266], CJK_TEXT)
+        SceneTextManager.layout_textblk(stub, item, text=CJK_TEXT)
+        self.assertEqual(stub.vertical_calls, [item.blk])
 
 
 class TestVerticalOutlineFit(unittest.TestCase):
