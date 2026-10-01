@@ -496,7 +496,14 @@ def layout_lines_alignside(
                 new_x = ox + new_len + line_height // 2
             line_valid = False
             if new_x < bw and new_x > 0:
-                if mask[np.clip(pos_y, 0, bh - 1): np.clip(line_bottom - lh_pad, 0, bh), new_x].mean() > 240:
+                # A zero-height probe means this line sits outside the mask
+                # window: oy comes from the block's first line in absolute
+                # page coords, so a block whose text starts above the window
+                # crop drives both clip bounds to 0. .mean() of that is nan
+                # and nan > 240 is False, which already reads as "no ink
+                # here"; keep that verdict but stop numpy warning on it.
+                _probe = mask[np.clip(pos_y, 0, bh - 1): np.clip(line_bottom - lh_pad, 0, bh), new_x]
+                if _probe.size and _probe.mean() > 240:
                     line_valid = True
                 else:
                     if ref_src_lines and line_id + 1 >= len(srcline_wlist) and line_is_valid(line, new_len, delimiter_len, max_width, words_length, srcline_wlist, line_id, line_height, ref_src_lines, row_profile=row_profile):
