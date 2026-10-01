@@ -6,7 +6,7 @@ be derived from the (left-to-right) source geometry.
 """
 import unittest
 
-from ballontranslator.utils.text_processing import is_rtl, is_cjk
+from ballontranslator.utils.text_processing import is_rtl
 from ballontranslator.utils.textblock import TextBlock, TextAlignment
 
 

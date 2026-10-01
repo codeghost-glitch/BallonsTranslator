@@ -6,7 +6,6 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import numpy as np
 from qtpy.QtWidgets import QApplication
 
-import ballontranslator.ui.text_engine.editing.manager as M
 from ballontranslator.ui.text_engine.editing.manager import SceneTextManager
 from ballontranslator.ui.text_engine.item import TextBlkItem
 from ballontranslator.utils.config import pcfg
@@ -201,7 +200,6 @@ class TestVerticalOutlineFit(unittest.TestCase):
         # geometry. A balloon outline that hugs the text (an ellipse matching
         # the block's aspect) must not reject a fit the box alone accepts,
         # while a much tighter outline must cap it harder.
-        import numpy as np
         box = [0, 0, 165, 266]
         cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
 

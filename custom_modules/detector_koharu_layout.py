@@ -3,7 +3,6 @@
 Model: https://huggingface.co/mayocream/koharu-layout-rfdetr-seg-2xl-1152
 """
 import logging
-import math
 import os
 import warnings
 from typing import List, Optional, Tuple

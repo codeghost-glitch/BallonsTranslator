@@ -1,10 +1,8 @@
-import doctest
 import unittest
 
 import cv2
 import numpy as np
 
-from ballontranslator.modules.inpaint import base as inpaint_base
 from ballontranslator.modules.inpaint.base import complete_mask_on_ink
 
 

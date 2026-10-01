@@ -378,7 +378,7 @@ def seg_thai_pkg(text: str) -> List[str]:
             from pythainlp.tokenize import word_tokenize
             THAISEG = word_tokenize
         except Exception as e:
-            print(f'pythainlp unavailable ({e}); Thai text wraps per character')
+            LOGGER.warning(f'pythainlp unavailable ({e}); Thai text wraps per character')
             THAISEG = False
     if THAISEG is False:
         return seg_to_chars(text)
